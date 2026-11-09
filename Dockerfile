@@ -7,7 +7,8 @@ RUN CARGO_BUILD_JOBS=2 cargo build --release --locked
 FROM debian:bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git openssh-client ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --uid 1000 --home-dir /tmp --no-create-home wiki
 COPY --from=build /src/target/release/wiki-llm-mcp /usr/local/bin/wiki-llm-mcp
 USER 1000:1000
 ENV HOME=/tmp
