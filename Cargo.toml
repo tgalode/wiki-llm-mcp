@@ -7,12 +7,20 @@ repository = "https://github.com/tgalode/wiki-llm-mcp"
 
 [dependencies]
 anyhow = "1"
+axum = "0.8"
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
-rmcp = { version = "3.9", features = ["server", "macros", "schemars", "transport-io"] }
+rmcp = { version = "3.9", features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
+getrandom = "0.3"
+sha2 = "0.10"
+subtle = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "net", "signal"] }
+url = "2"
 walkdir = "2"
 
 [dev-dependencies]
+http-body-util = "0.1"
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
