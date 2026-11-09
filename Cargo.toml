@@ -1,0 +1,18 @@
+[package]
+name = "wiki-llm-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "MCP server that lets Claude read, search and maintain an Obsidian/Markdown vault backed by Git"
+repository = "https://github.com/tgalode/wiki-llm-mcp"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+rmcp = { version = "3.9", features = ["server", "macros", "schemars", "transport-io"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

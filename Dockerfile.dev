@@ -1,0 +1,3 @@
+# Toolchain used by dev.sh: the host needs Docker only.
+FROM rust:1-bookworm
+RUN rustup component add clippy rustfmt
