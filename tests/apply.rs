@@ -193,14 +193,17 @@ fn refuses_paths_outside_visible_markdown() {
     let outside = tempdir().unwrap();
     #[cfg(unix)]
     symlink(outside.path(), dir.path().join("link")).unwrap();
-    for path in [
+    let mut paths = vec![
         "../x.md",
         "/etc/x.md",
         ".git/x.md",
         ".obsidian/x.md",
         "a.txt",
-        "link/x.md",
-    ] {
+    ];
+    if cfg!(unix) {
+        paths.push("link/x.md");
+    }
+    for path in paths {
         assert!(
             apply_changes(&vault, &[create(path, "x")], "r").is_err(),
             "{path}"
