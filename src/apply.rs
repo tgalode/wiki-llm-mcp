@@ -1,7 +1,7 @@
 //! The only way to change a vault. A call validates everything, then writes
 //! everything in one commit, or writes nothing. There is no delete operation.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::git::{commit_staged, git, git_network, git_ok, git_stdout, has_staged_changes};
 use crate::init::{refresh_index, INDEX_FILE, RULES_FILE};
 use crate::links::{rebase_own_links, rewrite_for_move};
-use crate::vault::{Vault, MAX_PAGE_BYTES};
+use crate::vault::{revision, Vault, MAX_PAGE_BYTES};
 
 pub const MAX_CHANGES: usize = 200;
 const MAX_REASON_CHARS: usize = 500;
@@ -27,8 +27,26 @@ const AUTHOR: &str = "Claude (wiki-llm-mcp) <wiki-llm-mcp@localhost>";
 pub enum Change {
     /// Create a new page. Fails if the page already exists.
     Create { path: String, content: String },
-    /// Replace the whole content of an existing page.
-    Update { path: String, content: String },
+    /// Replace the whole content of an existing page. Prefer `edit` or `append`
+    /// for a local change.
+    Update {
+        path: String,
+        content: String,
+        /// The `revision` that `read_page` returned for this page. The update
+        /// is refused if the page changed since, so read the page first.
+        revision: String,
+    },
+    /// Replace one passage of an existing page, leaving the rest untouched.
+    Edit {
+        path: String,
+        /// Text to replace, copied exactly from the page. It must appear
+        /// exactly once: include enough surrounding text to make it unique.
+        old_text: String,
+        /// Text that takes its place. Empty to remove the passage.
+        new_text: String,
+    },
+    /// Add text at the end of an existing page.
+    Append { path: String, content: String },
     /// Move or rename a page, updating the links that point to it.
     Move { from: String, to: String },
 }
@@ -39,6 +57,9 @@ pub struct ApplyReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
     pub pages_changed: Vec<String>,
+    /// New revision of each page written, for a later `update` without
+    /// reading the page again.
+    pub revisions: BTreeMap<String, String>,
     pub links_updated: usize,
     pub pushed: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -119,6 +140,18 @@ impl<'a> Plan<'a> {
         Ok(())
     }
 
+    /// Checks that a page can be changed in place, and returns its normalized path.
+    fn existing_page(&self, path: &str) -> Result<String> {
+        let page = Vault::normalize(path)?;
+        ensure_not_protected(&page)?;
+        ensure_not_raw(&page)?;
+        self.vault.check_writable(&page)?;
+        if !self.pages.contains(&page) {
+            bail!("page not found: {page}");
+        }
+        Ok(page)
+    }
+
     fn apply(&mut self, change: &Change) -> Result<()> {
         match change {
             Change::Create { path, content } => {
@@ -129,16 +162,60 @@ impl<'a> Plan<'a> {
                 self.ensure_free(&page)?;
                 self.set(&page, content.clone());
             }
-            Change::Update { path, content } => {
-                let page = Vault::normalize(path)?;
-                ensure_not_protected(&page)?;
-                ensure_not_raw(&page)?;
+            Change::Update {
+                path,
+                content,
+                revision: read_revision,
+            } => {
+                let page = self.existing_page(path)?;
                 ensure_size(&page, content)?;
-                self.vault.check_writable(&page)?;
-                if !self.pages.contains(&page) {
-                    bail!("page not found: {page}");
+                // A page already changed by this call has no revision the
+                // caller could know: the check is for what was on disk.
+                if !self.written.contains(&page) && revision(&self.read(&page)?) != *read_revision {
+                    bail!(
+                        "{page} changed since you read it, or the revision is not the one \
+                         read_page returned: read the page again, then retry"
+                    );
                 }
                 self.set(&page, content.clone());
+            }
+            Change::Edit {
+                path,
+                old_text,
+                new_text,
+            } => {
+                let page = self.existing_page(path)?;
+                if old_text.is_empty() {
+                    bail!("{page}: old_text is empty");
+                }
+                let current = self.read(&page)?;
+                match current.matches(old_text.as_str()).count() {
+                    0 => bail!(
+                        "{page}: old_text was not found. It must match the page exactly: \
+                         read the page again"
+                    ),
+                    1 => {}
+                    count => bail!(
+                        "{page}: old_text appears {count} times. Include more surrounding \
+                         text so that it is unique"
+                    ),
+                }
+                let updated = current.replacen(old_text.as_str(), new_text, 1);
+                ensure_size(&page, &updated)?;
+                self.set(&page, updated);
+            }
+            Change::Append { path, content } => {
+                let page = self.existing_page(path)?;
+                if content.is_empty() {
+                    bail!("{page}: nothing to append");
+                }
+                let mut updated = self.read(&page)?;
+                if !updated.is_empty() && !updated.ends_with('\n') {
+                    updated.push('\n');
+                }
+                updated.push_str(content);
+                ensure_size(&page, &updated)?;
+                self.set(&page, updated);
             }
             Change::Move { from, to } => self.apply_move(from, to)?,
         }
@@ -394,11 +471,17 @@ pub fn apply_changes(vault: &Vault, changes: &[Change], reason: &str) -> Result<
     // Also sends commits that an earlier offline call could not push.
     let pushed = upstream && push_remote(root, &mut warnings);
 
+    let revisions = plan
+        .written
+        .iter()
+        .map(|page| (page.clone(), revision(&plan.contents[page])))
+        .collect();
     let mut pages_changed: Vec<String> = plan.written.iter().cloned().collect();
     pages_changed.extend(plan.removed.iter().cloned());
     Ok(ApplyReport {
         commit,
         pages_changed,
+        revisions,
         links_updated: plan.links_updated,
         pushed,
         warnings,

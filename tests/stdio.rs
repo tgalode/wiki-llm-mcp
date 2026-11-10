@@ -77,7 +77,11 @@ fn serves_the_vault_over_the_mcp_protocol() {
     let text = |result: &Value| result["content"][0]["text"].as_str().unwrap().to_string();
 
     let read = call(3, "read_page", json!({"path":"wiki/topic.md"}));
-    assert_eq!(text(&read), "# Topic\nabout borrow checkers");
+    let page: Value = serde_json::from_str(&text(&read)).unwrap();
+    assert_eq!(page["content"], "# Topic\nabout borrow checkers");
+    assert_eq!(page["path"], "wiki/topic.md");
+    let revision = page["revision"].as_str().unwrap().to_string();
+    assert_eq!(revision.len(), 12);
 
     let found = call(4, "search", json!({"query":"BORROW"}));
     assert!(text(&found).contains("wiki/topic.md"));
@@ -96,11 +100,43 @@ fn serves_the_vault_over_the_mcp_protocol() {
         "apply_changes",
         json!({"reason":"add a page","changes":[
             {"op":"create","path":"wiki/new.md","content":"# New"},
+            {"op":"update","path":"wiki/topic.md","content":"# Topic\nabout lifetimes\n",
+             "revision":revision},
+            {"op":"edit","path":"wiki/topic.md","old_text":"lifetimes","new_text":"traits"},
+            {"op":"append","path":"wiki/topic.md","content":"and macros\n"},
             {"op":"move","from":"wiki/topic.md","to":"wiki/renamed.md"}]}),
     );
     let report: Value = serde_json::from_str(&text(&applied)).unwrap();
     assert!(report["commit"].is_string(), "{report}");
-    assert!(vault.join("wiki/renamed.md").exists());
+    assert!(
+        report["revisions"]["wiki/renamed.md"].is_string(),
+        "{report}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(vault.join("wiki/renamed.md")).unwrap(),
+        "# Topic\nabout traits\nand macros\n"
+    );
+
+    let stale = call(
+        9,
+        "apply_changes",
+        json!({"reason":"x","changes":[
+            {"op":"update","path":"wiki/renamed.md","content":"lost","revision":revision}]}),
+    );
+    assert_eq!(stale["isError"], true, "{stale}");
+    let no_revision = call(
+        10,
+        "apply_changes",
+        json!({"reason":"x","changes":[
+            {"op":"update","path":"wiki/renamed.md","content":"lost"}]}),
+    );
+    assert!(
+        no_revision.is_null() || no_revision["isError"] == true,
+        "{no_revision}"
+    );
+    assert!(std::fs::read_to_string(vault.join("wiki/renamed.md"))
+        .unwrap()
+        .contains("traits"));
 
     let no_delete = call(
         8,

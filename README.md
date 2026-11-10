@@ -23,7 +23,11 @@ through it.
 ## What it does
 
 - **Read and search** the Markdown pages of a vault.
-- **Create, update and move** pages. One call makes one commit, or writes nothing.
+- **Create, edit and move** pages: replace one passage, add at the end, or
+  rewrite a whole page. One call makes one commit, or writes nothing.
+- **Never overwrite a newer version**: rewriting a whole page requires the
+  revision of the page as it was read, and is refused if the page changed since
+  (in Obsidian, or on another device).
 - **Keep links valid** when a page moves (`[[wikilinks]]` and Markdown links).
 - **Protect your work**: uncommitted edits are saved in their own commit before
   the LLM writes, and its commits have their own author.

@@ -23,8 +23,11 @@ impossible de supprimer une note par son intermédiaire.
 ## Ce que ça fait
 
 - **Lire et chercher** dans les pages Markdown d'un coffre.
-- **Créer, modifier et déplacer** des pages. Un appel produit un commit, ou
-  n'écrit rien.
+- **Créer, modifier et déplacer** des pages : remplacer un passage, ajouter à la
+  fin, ou réécrire une page entière. Un appel produit un commit, ou n'écrit rien.
+- **Ne jamais écraser une version plus récente** : réécrire une page entière
+  exige la révision de la page telle qu'elle a été lue, et est refusé si la page
+  a changé depuis (dans Obsidian, ou sur un autre appareil).
 - **Garder les liens valides** quand une page est déplacée (`[[wikilinks]]` et
   liens Markdown).
 - **Protéger votre travail** : vos modifications non commitées sont enregistrées

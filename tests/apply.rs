@@ -7,7 +7,7 @@ use std::thread;
 use tempfile::{tempdir, TempDir};
 use wiki_llm_mcp::apply::{apply_changes, Change, MAX_CHANGES};
 use wiki_llm_mcp::init::{init, INDEX_FILE, RULES_FILE};
-use wiki_llm_mcp::vault::{Vault, MAX_PAGE_BYTES};
+use wiki_llm_mcp::vault::{revision, Vault, MAX_PAGE_BYTES};
 
 fn git(root: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -46,8 +46,33 @@ fn create(path: &str, content: &str) -> Change {
     }
 }
 
-fn update(path: &str, content: &str) -> Change {
+/// An update by a caller who has just read the page.
+fn update(root: &Path, path: &str, content: &str) -> Change {
     Change::Update {
+        path: path.into(),
+        content: content.into(),
+        revision: revision(&fs::read_to_string(root.join(path)).unwrap_or_default()),
+    }
+}
+
+fn stale_update(path: &str, content: &str, read: &str) -> Change {
+    Change::Update {
+        path: path.into(),
+        content: content.into(),
+        revision: revision(read),
+    }
+}
+
+fn edit(path: &str, old_text: &str, new_text: &str) -> Change {
+    Change::Edit {
+        path: path.into(),
+        old_text: old_text.into(),
+        new_text: new_text.into(),
+    }
+}
+
+fn append(path: &str, content: &str) -> Change {
+    Change::Append {
         path: path.into(),
         content: content.into(),
     }
@@ -78,7 +103,7 @@ fn several_pages_make_a_single_commit_signed_by_the_llm() {
         &vault,
         &[
             create("wiki/b.md", "# B"),
-            update("wiki/a.md", "new"),
+            update(dir.path(), "wiki/a.md", "new"),
             create("new/dir/c.md", "c"),
         ],
         "integrate an article",
@@ -112,9 +137,9 @@ fn one_invalid_change_means_nothing_is_written() {
     let error = apply_changes(
         &vault,
         &[
-            update("wiki/a.md", "new"),
+            update(dir.path(), "wiki/a.md", "new"),
             create("wiki/b.md", "b"),
-            update("missing.md", "x"),
+            update(dir.path(), "missing.md", "x"),
         ],
         "r",
     )
@@ -190,7 +215,7 @@ fn refuses_writing_through_a_symlinked_page() {
         dir.path().join("wiki/alias.md"),
     )
     .unwrap();
-    assert!(apply_changes(&vault, &[update("wiki/alias.md", "x")], "r").is_err());
+    assert!(apply_changes(&vault, &[update(dir.path(), "wiki/alias.md", "x")], "r").is_err());
     assert!(apply_changes(&vault, &[create("wiki/alias.md", "x")], "r").is_err());
     assert_eq!(read(dir.path(), "wiki/real.md"), "real");
 }
@@ -201,7 +226,7 @@ fn rules_and_index_cannot_be_changed() {
     let rules = read(dir.path(), RULES_FILE);
     for file in [RULES_FILE, INDEX_FILE, "wiki.md"] {
         assert!(
-            apply_changes(&vault, &[update(file, "x")], "r").is_err(),
+            apply_changes(&vault, &[update(dir.path(), file, "x")], "r").is_err(),
             "{file}"
         );
     }
@@ -213,7 +238,7 @@ fn rules_and_index_cannot_be_changed() {
 fn raw_sources_can_be_added_but_not_altered() {
     let (dir, vault) = vault_with(&[]);
     apply_changes(&vault, &[create("raw/source.md", "original")], "add source").unwrap();
-    assert!(apply_changes(&vault, &[update("raw/source.md", "x")], "r").is_err());
+    assert!(apply_changes(&vault, &[update(dir.path(), "raw/source.md", "x")], "r").is_err());
     assert!(apply_changes(&vault, &[mv("raw/source.md", "wiki/s.md")], "r").is_err());
     assert_eq!(read(dir.path(), "raw/source.md"), "original");
 }
@@ -225,7 +250,12 @@ fn the_owners_uncommitted_work_is_saved_separately_first() {
     write(dir.path(), "note.md", "edited in obsidian");
     write(dir.path(), "other.md", "new in obsidian");
 
-    apply_changes(&vault, &[update("note.md", "from the llm")], "r").unwrap();
+    apply_changes(
+        &vault,
+        &[update(dir.path(), "note.md", "from the llm")],
+        "r",
+    )
+    .unwrap();
 
     assert_eq!(commits(dir.path()), before + 2);
     assert_eq!(
@@ -244,10 +274,159 @@ fn the_owners_uncommitted_work_is_saved_separately_first() {
 }
 
 #[test]
+fn an_update_from_a_stale_read_is_refused() {
+    let (dir, vault) = vault_with(&[("note.md", "as read by the llm")]);
+    write(dir.path(), "note.md", "edited in obsidian since");
+
+    let error = apply_changes(
+        &vault,
+        &[stale_update(
+            "note.md",
+            "from the llm",
+            "as read by the llm",
+        )],
+        "r",
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("read the page again"), "{error}");
+    assert_eq!(read(dir.path(), "note.md"), "edited in obsidian since");
+    // The owner's edit is committed all the same: nothing of theirs is pending.
+    assert_eq!(git(dir.path(), &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn an_update_from_a_stale_read_is_refused_after_a_remote_change() {
+    let (_dir, vault, device) = with_remote(&[("a.md", "old")]);
+    commit_on_device(&device, "a.md", "changed on another device");
+
+    let error =
+        apply_changes(&vault, &[stale_update("a.md", "from the llm", "old")], "r").unwrap_err();
+
+    assert!(error.to_string().contains("read the page again"), "{error}");
+    assert_eq!(read(vault.root(), "a.md"), "changed on another device");
+}
+
+#[test]
+fn the_report_gives_the_revisions_for_a_next_update() {
+    let (dir, vault) = vault_with(&[("a.md", "one")]);
+    let report = apply_changes(&vault, &[update(dir.path(), "a.md", "two")], "r").unwrap();
+    assert_eq!(report.revisions["a.md"], revision("two"));
+
+    let again = Change::Update {
+        path: "a.md".into(),
+        content: "three".into(),
+        revision: report.revisions["a.md"].clone(),
+    };
+    apply_changes(&vault, &[again], "r").unwrap();
+    assert_eq!(read(dir.path(), "a.md"), "three");
+}
+
+#[test]
+fn edit_replaces_one_passage_and_keeps_the_rest() {
+    let (dir, vault) = vault_with(&[("a.md", "# Title\n\nfirst\nsecond\n")]);
+    let before = commits(dir.path());
+    let report = apply_changes(&vault, &[edit("a.md", "first", "1st")], "r").unwrap();
+    assert_eq!(read(dir.path(), "a.md"), "# Title\n\n1st\nsecond\n");
+    assert_eq!(commits(dir.path()), before + 1);
+    assert_eq!(report.pages_changed, ["a.md"]);
+
+    apply_changes(&vault, &[edit("a.md", "second\n", "")], "r").unwrap();
+    assert_eq!(read(dir.path(), "a.md"), "# Title\n\n1st\n");
+}
+
+#[test]
+fn edit_needs_a_passage_found_exactly_once() {
+    let (dir, vault) = vault_with(&[("a.md", "same line\nsame line\nother\n")]);
+    let content = read(dir.path(), "a.md");
+    for (old_text, expected) in [
+        ("absent", "not found"),
+        ("same line", "2 times"),
+        ("", "empty"),
+    ] {
+        let error = apply_changes(&vault, &[edit("a.md", old_text, "x")], "r").unwrap_err();
+        assert!(
+            error.to_string().contains(expected),
+            "{old_text:?}: {error}"
+        );
+    }
+    assert!(apply_changes(&vault, &[edit("missing.md", "a", "b")], "r").is_err());
+    assert_eq!(read(dir.path(), "a.md"), content);
+}
+
+#[test]
+fn edit_applies_to_the_owners_latest_version() {
+    let (dir, vault) = vault_with(&[("a.md", "intro\ntarget\n")]);
+    write(dir.path(), "a.md", "intro\ntarget\nadded in obsidian\n");
+    apply_changes(&vault, &[edit("a.md", "target", "done")], "r").unwrap();
+    assert_eq!(read(dir.path(), "a.md"), "intro\ndone\nadded in obsidian\n");
+}
+
+#[test]
+fn append_adds_at_the_end_on_a_new_line() {
+    let (dir, vault) = vault_with(&[("a.md", "no newline"), ("b.md", "newline\n"), ("c.md", "")]);
+    apply_changes(
+        &vault,
+        &[
+            append("a.md", "more\n"),
+            append("b.md", "more\n"),
+            append("c.md", "more\n"),
+        ],
+        "r",
+    )
+    .unwrap();
+    assert_eq!(read(dir.path(), "a.md"), "no newline\nmore\n");
+    assert_eq!(read(dir.path(), "b.md"), "newline\nmore\n");
+    assert_eq!(read(dir.path(), "c.md"), "more\n");
+    assert!(apply_changes(&vault, &[append("a.md", "")], "r").is_err());
+    assert!(apply_changes(&vault, &[append("missing.md", "x")], "r").is_err());
+}
+
+#[test]
+fn edits_and_appends_respect_the_protected_files_and_the_size_limit() {
+    let (dir, vault) = vault_with(&[("a.md", "x")]);
+    apply_changes(&vault, &[create("raw/source.md", "original")], "add source").unwrap();
+    let rules = read(dir.path(), RULES_FILE);
+    let word = rules.split_whitespace().nth(1).unwrap().to_string();
+    assert!(apply_changes(&vault, &[append(RULES_FILE, "x")], "r").is_err());
+    assert!(apply_changes(&vault, &[edit(RULES_FILE, &word, "x")], "r").is_err());
+    assert!(apply_changes(&vault, &[append("raw/source.md", "x")], "r").is_err());
+    assert!(apply_changes(&vault, &[edit("raw/source.md", "original", "x")], "r").is_err());
+    let huge = "x".repeat(MAX_PAGE_BYTES as usize);
+    assert!(apply_changes(&vault, &[append("a.md", &huge)], "r").is_err());
+    assert!(apply_changes(&vault, &[edit("a.md", "x", &format!("{huge}y"))], "r").is_err());
+    assert_eq!(read(dir.path(), RULES_FILE), rules);
+    assert_eq!(read(dir.path(), "raw/source.md"), "original");
+    assert_eq!(read(dir.path(), "a.md"), "x");
+}
+
+#[test]
+fn edits_chain_with_other_changes_of_the_same_call() {
+    let (dir, vault) = vault_with(&[("a.md", "one two")]);
+    apply_changes(
+        &vault,
+        &[
+            create("new.md", "draft"),
+            edit("new.md", "draft", "final"),
+            edit("a.md", "one", "1"),
+            edit("a.md", "two", "2"),
+            append("a.md", "3"),
+            mv("a.md", "b.md"),
+            append("b.md", "4"),
+        ],
+        "r",
+    )
+    .unwrap();
+    assert_eq!(read(dir.path(), "new.md"), "final");
+    assert_eq!(read(dir.path(), "b.md"), "1 2\n3\n4");
+    assert!(!dir.path().join("a.md").exists());
+}
+
+#[test]
 fn identical_content_makes_no_commit() {
     let (dir, vault) = vault_with(&[("a.md", "same")]);
     let before = commits(dir.path());
-    let report = apply_changes(&vault, &[update("a.md", "same")], "r").unwrap();
+    let report = apply_changes(&vault, &[update(dir.path(), "a.md", "same")], "r").unwrap();
     assert_eq!(report.commit, None);
     assert_eq!(commits(dir.path()), before);
 }
@@ -325,10 +504,10 @@ fn chained_changes_see_each_other() {
     apply_changes(
         &vault,
         &[
-            update("a.md", "A2"),
+            update(dir.path(), "a.md", "A2"),
             mv("a.md", "b.md"),
             create("a.md", "fresh"),
-            update("link.md", "[[b]] edited"),
+            update(dir.path(), "link.md", "[[b]] edited"),
         ],
         "r",
     )
@@ -367,7 +546,7 @@ fn a_failing_commit_restores_the_vault() {
     assert!(apply_changes(
         &vault,
         &[
-            update("a.md", "new"),
+            update(dir.path(), "a.md", "new"),
             create("c.md", "c"),
             mv("b.md", "d.md")
         ],
@@ -387,7 +566,7 @@ fn refuses_a_vault_without_git() {
     let dir = tempdir().unwrap();
     write(dir.path(), "a.md", "x");
     let vault = Vault::open(dir.path()).unwrap();
-    let error = apply_changes(&vault, &[update("a.md", "y")], "r").unwrap_err();
+    let error = apply_changes(&vault, &[update(dir.path(), "a.md", "y")], "r").unwrap_err();
     assert!(error.to_string().contains("init"), "{error}");
     assert_eq!(read(dir.path(), "a.md"), "x");
 }
@@ -396,7 +575,7 @@ fn refuses_a_vault_without_git() {
 fn refuses_to_write_during_a_git_operation() {
     let (dir, vault) = vault_with(&[("a.md", "x")]);
     fs::write(dir.path().join(".git/MERGE_HEAD"), "x").unwrap();
-    assert!(apply_changes(&vault, &[update("a.md", "y")], "r").is_err());
+    assert!(apply_changes(&vault, &[update(dir.path(), "a.md", "y")], "r").is_err());
     assert_eq!(read(dir.path(), "a.md"), "x");
 }
 
@@ -454,7 +633,12 @@ fn pushes_each_commit_to_the_remote() {
 fn takes_in_remote_changes_before_writing() {
     let (_dir, vault, device) = with_remote(&[("a.md", "x")]);
     commit_on_device(&device, "from-device.md", "device note");
-    apply_changes(&vault, &[update("from-device.md", "improved")], "r").unwrap();
+    apply_changes(
+        &vault,
+        &[stale_update("from-device.md", "improved", "device note")],
+        "r",
+    )
+    .unwrap();
     assert_eq!(read(vault.root(), "from-device.md"), "improved");
     git(&device, &["pull", "-q"]);
     assert_eq!(read(&device, "from-device.md"), "improved");

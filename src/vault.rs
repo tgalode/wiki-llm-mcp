@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 pub const MAX_PAGE_BYTES: u64 = 2 * 1024 * 1024;
@@ -34,6 +35,15 @@ pub struct SearchHit {
     pub path: String,
     pub matches: usize,
     pub snippet: String,
+}
+
+/// Short fingerprint of a page's content. A writer sends back the one it read,
+/// so that a page changed in the meantime is not overwritten.
+pub fn revision(content: &str) -> String {
+    Sha256::digest(content.as_bytes())[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn is_hidden(name: &str) -> bool {
