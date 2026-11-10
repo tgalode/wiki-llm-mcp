@@ -58,7 +58,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          archive="wiki-llm-mcp-$TAG-$TARGET.tar.gz"
+          # No version in the name: releases/latest/download/<name> stays valid.
+          archive="wiki-llm-mcp-$TARGET.tar.gz"
           tar -czf "$archive" -C "target/$TARGET/release" wiki-llm-mcp
           gh release upload "$TAG" "$archive"
 

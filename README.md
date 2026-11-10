@@ -61,18 +61,26 @@ flowchart TD
 
 ## Install
 
-You need `git` on the machine that serves the vault, and either a Rust
-toolchain or Docker to build.
+You need `git` on the machine that serves the vault. Then pick one of:
+
+**A prebuilt binary**, for Linux x86_64 (static, any distribution) or macOS on
+Apple silicon:
 
 ```sh
-git clone https://github.com/tgalode/wiki-llm-mcp
-cd wiki-llm-mcp
-cargo install --path . --locked   # installs ~/.cargo/bin/wiki-llm-mcp
+target=x86_64-unknown-linux-musl   # macOS: aarch64-apple-darwin
+curl -L "https://github.com/tgalode/wiki-llm-mcp/releases/latest/download/wiki-llm-mcp-$target.tar.gz" | tar -xz
+sudo install wiki-llm-mcp /usr/local/bin/
 wiki-llm-mcp --version
 ```
 
-Without Rust, build the image instead (`docker build -t wiki-llm-mcp .`) and
-run it as shown under [Remote mode](#remote-mode-claude-mobile-and-web).
+**From source**, on any platform with a Rust toolchain:
+
+```sh
+cargo install --git https://github.com/tgalode/wiki-llm-mcp --locked
+```
+
+**The Docker image**, `ghcr.io/tgalode/wiki-llm-mcp`, used as shown under
+[Remote mode](#remote-mode-claude-mobile-and-web).
 
 Then follow [Usage](#usage), or let an agent do it for you.
 
@@ -94,10 +102,10 @@ Before doing anything, ask me:
    HTTPS address that I must provide through a reverse proxy or a tunnel).
 
 Then:
-1. Check that git is installed. Build the binary with
-   `cargo install --path . --locked` from a clone of the repository, or build
-   the Docker image if there is no Rust toolchain. Do not install a toolchain
-   or any system package without asking me.
+1. Check that git is installed. Install the binary the way the README's
+   Install section describes: the prebuilt binary if there is one for this
+   platform, otherwise `cargo install`, or the Docker image. Do not install a
+   toolchain or any system package without asking me.
 2. Run `wiki-llm-mcp init <vault>`. It keeps my existing notes where they are
    and commits their original state first. If it refuses (the folder is inside
    another Git repository, or a WIKI-INDEX.md it did not generate already
@@ -216,12 +224,14 @@ sequenceDiagram
 With Docker:
 
 ```sh
-docker build -t wiki-llm-mcp .
 docker run --rm -u "$(id -u):$(id -g)" --read-only --cap-drop ALL \
   --security-opt no-new-privileges --tmpfs /tmp \
   -v "$PWD/vault:/vault" -e WIKI_LLM_MCP_SECRET -p 127.0.0.1:8787:8787 \
-  wiki-llm-mcp serve /vault --public-url https://wiki.example.com --bind 0.0.0.0:8787
+  ghcr.io/tgalode/wiki-llm-mcp serve /vault \
+  --public-url https://wiki.example.com --bind 0.0.0.0:8787
 ```
+
+To build the image yourself: `docker build -t wiki-llm-mcp .`
 
 ### Rotating the secret
 

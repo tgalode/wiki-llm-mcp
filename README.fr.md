@@ -64,18 +64,26 @@ flowchart TD
 
 ## Installation
 
-Il faut `git` sur la machine qui sert le coffre, et soit une toolchain Rust,
-soit Docker, pour compiler.
+Il faut `git` sur la machine qui sert le coffre. Ensuite, au choix :
+
+**Un binaire précompilé**, pour Linux x86_64 (statique, toutes distributions) ou
+macOS sur puce Apple :
 
 ```sh
-git clone https://github.com/tgalode/wiki-llm-mcp
-cd wiki-llm-mcp
-cargo install --path . --locked   # installe ~/.cargo/bin/wiki-llm-mcp
+target=x86_64-unknown-linux-musl   # macOS : aarch64-apple-darwin
+curl -L "https://github.com/tgalode/wiki-llm-mcp/releases/latest/download/wiki-llm-mcp-$target.tar.gz" | tar -xz
+sudo install wiki-llm-mcp /usr/local/bin/
 wiki-llm-mcp --version
 ```
 
-Sans Rust, construisez plutôt l'image (`docker build -t wiki-llm-mcp .`) et
-lancez-la comme indiqué dans [Mode distant](#mode-distant-claude-mobile-et-web).
+**Depuis les sources**, sur toute plateforme disposant d'une toolchain Rust :
+
+```sh
+cargo install --git https://github.com/tgalode/wiki-llm-mcp --locked
+```
+
+**L'image Docker**, `ghcr.io/tgalode/wiki-llm-mcp`, à lancer comme indiqué dans
+[Mode distant](#mode-distant-claude-mobile-et-web).
 
 Suivez ensuite [Utilisation](#utilisation), ou laissez un agent le faire pour vous.
 
@@ -101,10 +109,10 @@ Avant de faire quoi que ce soit, demande-moi :
    tunnel).
 
 Ensuite :
-1. Vérifie que git est installé. Compile le binaire avec
-   `cargo install --path . --locked` depuis un clone du dépôt, ou construis
-   l'image Docker s'il n'y a pas de toolchain Rust. N'installe ni toolchain ni
-   paquet système sans me demander.
+1. Vérifie que git est installé. Installe le binaire comme le décrit la
+   section Installation du README : le binaire précompilé s'il existe pour
+   cette plateforme, sinon `cargo install`, ou l'image Docker. N'installe ni
+   toolchain ni paquet système sans me demander.
 2. Lance `wiki-llm-mcp init <coffre>`. La commande laisse mes notes existantes
    à leur place et commite d'abord leur état d'origine. Si elle refuse (le
    dossier est dans un autre dépôt Git, ou il existe déjà un WIKI-INDEX.md
@@ -231,12 +239,14 @@ sequenceDiagram
 Avec Docker :
 
 ```sh
-docker build -t wiki-llm-mcp .
 docker run --rm -u "$(id -u):$(id -g)" --read-only --cap-drop ALL \
   --security-opt no-new-privileges --tmpfs /tmp \
   -v "$PWD/vault:/vault" -e WIKI_LLM_MCP_SECRET -p 127.0.0.1:8787:8787 \
-  wiki-llm-mcp serve /vault --public-url https://wiki.example.com --bind 0.0.0.0:8787
+  ghcr.io/tgalode/wiki-llm-mcp serve /vault \
+  --public-url https://wiki.example.com --bind 0.0.0.0:8787
 ```
+
+Pour construire l'image vous-même : `docker build -t wiki-llm-mcp .`
 
 ### Changer le secret
 
