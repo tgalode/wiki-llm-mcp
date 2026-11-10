@@ -1,5 +1,7 @@
 # wiki-llm-mcp
 
+**English** · [Français](README.fr.md)
+
 An MCP server that lets Claude read, search and maintain your Obsidian or
 Markdown vault. Every change is a Git commit, and notes can never be deleted
 through it.
