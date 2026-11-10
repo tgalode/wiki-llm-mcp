@@ -183,3 +183,33 @@ fn the_environment_variable_wins_and_nothing_is_stored() {
     assert!(!vault.join(".git/wiki-llm-mcp/secret").exists());
     assert!(!secret_command(&vault, &[]).0);
 }
+
+#[test]
+fn a_home_folder_is_never_turned_into_a_vault() {
+    let home = tempdir().unwrap();
+    fs::write(home.path().join("private.txt"), "not a note").unwrap();
+    for arguments in [vec!["init"], vec!["serve", "--init"]] {
+        let status = Command::new(BIN)
+            .args(&arguments)
+            .arg(home.path())
+            .env("HOME", home.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(!status.success(), "{arguments:?}");
+        assert!(!home.path().join(".git").exists(), "{arguments:?}");
+    }
+
+    // A folder inside it is fine.
+    let notes = home.path().join("notes");
+    let status = Command::new(BIN)
+        .arg("init")
+        .arg(&notes)
+        .env("HOME", home.path())
+        .stdout(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+}

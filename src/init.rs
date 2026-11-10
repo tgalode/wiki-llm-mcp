@@ -109,6 +109,14 @@ pub fn init(path: &Path) -> Result<InitReport> {
     let root = path.canonicalize()?;
 
     // Everything that can refuse comes first, so a refusal leaves the vault untouched.
+    // A folder picked by mistake would have all of its files committed.
+    let home = std::env::var_os("HOME").and_then(|home| Path::new(&home).canonicalize().ok());
+    if root.parent().is_none() || home.as_deref() == Some(root.as_path()) {
+        bail!(
+            "a home folder or a whole disk cannot be a vault: choose the folder that holds \
+             the notes"
+        );
+    }
     let index_path = root.join(INDEX_FILE);
     if index_path.exists() {
         let existing = fs::read_to_string(&index_path).unwrap_or_default();
