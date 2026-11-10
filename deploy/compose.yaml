@@ -1,0 +1,63 @@
+# wiki-llm-mcp in remote mode, for Claude mobile, web and desktop.
+#
+#   cp .env.example .env        # then set PUBLIC_URL
+#   mkdir -p vault              # or point VAULT at your existing notes
+#   docker compose up -d
+#   docker compose exec wiki wiki-llm-mcp secret /vault
+#
+# The last command prints the secret that Claude asks for when you add the
+# connector <PUBLIC_URL>/mcp.
+#
+# The server needs a public HTTPS address in front of it. Either:
+# - your own reverse proxy, pointed at 127.0.0.1:8787 (the default below), or
+# - a Cloudflare Tunnel, started with `docker compose --profile tunnel up -d`
+#   once TUNNEL_TOKEN is set in .env. In the tunnel's public hostname, the
+#   service is http://wiki:8787. No port needs to be opened on the host.
+
+services:
+  wiki:
+    image: ghcr.io/tgalode/wiki-llm-mcp:latest
+    restart: unless-stopped
+    # Must own the vault folder: the id of the user who edits the notes.
+    user: "${PUID:-1000}:${PGID:-1000}"
+    command:
+      - serve
+      - /vault
+      - --init
+      - --public-url
+      - ${PUBLIC_URL:?set PUBLIC_URL in .env, such as https://wiki.example.com}
+      - --bind
+      - 0.0.0.0:8787
+    volumes:
+      - ${VAULT:-./vault}:/vault
+    ports:
+      - 127.0.0.1:${PORT:-8787}:8787
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 64
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/8787; printf 'GET /healthz HTTP/1.0\r\n\r\n' >&3; grep -q '200 OK' <&3
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  tunnel:
+    profiles: [tunnel]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    depends_on:
+      - wiki

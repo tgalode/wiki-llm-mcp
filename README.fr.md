@@ -16,6 +16,9 @@ impossible de supprimer une note par son intermédiaire.
   - [Configurer avec un agent IA](#configurer-avec-un-agent-ia)
 - [Utilisation](#utilisation)
 - [Mode distant (Claude mobile et web)](#mode-distant-claude-mobile-et-web)
+  - [Avec Docker Compose](#avec-docker-compose)
+  - [Sans Docker](#sans-docker)
+  - [Connecter Claude](#connecter-claude)
   - [Changer le secret](#changer-le-secret)
 - [Développement](#développement)
 - [Licence](#licence)
@@ -122,10 +125,11 @@ Ensuite :
    `wiki-llm-mcp serve <chemin absolu du coffre>`, en chemins absolus (Claude
    Desktop : `claude_desktop_config.json` ; Claude Code :
    `claude mcp add wiki -- <binaire> serve <coffre>`).
-4. Mode distant, seulement si je l'ai demandé : génère un secret avec
-   `openssl rand -base64 32`, range-le dans un fichier que je suis seul à
-   pouvoir lire, ne l'affiche jamais dans la conversation et ne le commite pas,
-   puis démarre le serveur avec `--public-url` comme le décrit le README.
+4. Mode distant, seulement si je l'ai demandé : démarre le serveur comme le
+   décrit la section Mode distant du README (Docker Compose si Docker est
+   présent, sinon le binaire avec `--public-url`). Il génère lui-même son
+   secret : donne-moi la commande qui l'affiche, et n'affiche jamais le secret
+   dans la conversation ni dans un commit.
    N'expose rien publiquement toi-même : dis-moi vers quelle adresse et quel
    port mon proxy ou mon tunnel doit pointer, puis donne-moi l'URL du
    connecteur (`<url publique>/mcp`) à ajouter dans Claude.
@@ -147,7 +151,8 @@ wiki-llm-mcp serve ./vault   # le sert sur stdio
 
 `init` ajoute `raw/`, `wiki/`, `WIKI.md` et un `WIKI-INDEX.md` généré, et met en
 place Git. Les notes existantes restent où elles sont ; leur état d'origine est
-commité en premier.
+commité en premier. `serve --init` le fait au premier démarrage, si le dossier
+n'est pas encore prêt.
 
 `WIKI.md` contient les règles données au LLM quand il se connecte. Modifiez-le
 pour changer la façon dont votre wiki est maintenu. Le LLM ne peut pas le
@@ -197,12 +202,46 @@ flowchart LR
     vault -. "pull / push (facultatif)" .-> remote[("Dépôt Git distant")]
 ```
 
+### Avec Docker Compose
+
 ```sh
-export WIKI_LLM_MCP_SECRET="$(openssl rand -base64 32)"   # à garder en lieu sûr
-wiki-llm-mcp serve ./vault --public-url https://wiki.example.com
+mkdir wiki-llm-mcp && cd wiki-llm-mcp
+curl -LO https://raw.githubusercontent.com/tgalode/wiki-llm-mcp/main/deploy/compose.yaml
+curl -L -o .env https://raw.githubusercontent.com/tgalode/wiki-llm-mcp/main/deploy/.env.example
+nano .env                 # renseigner PUBLIC_URL
+mkdir -p vault            # ou pointer VAULT vers vos notes existantes
+docker compose up -d
+docker compose exec wiki wiki-llm-mcp secret /vault
 ```
 
-Le serveur écoute sur `127.0.0.1:8787` (`--bind` pour changer). Dans Claude,
+Le premier démarrage prépare le coffre et génère le secret ; la dernière
+commande l'affiche. Pointez votre reverse proxy vers `127.0.0.1:8787`.
+
+Sans reverse proxy, le même fichier peut lancer un
+[tunnel Cloudflare](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) :
+renseignez `TUNNEL_TOKEN` dans `.env`, donnez au nom d'hôte public du tunnel le
+service `http://wiki:8787`, puis démarrez avec
+`docker compose --profile tunnel up -d`. Aucun port n'est à ouvrir sur le
+serveur.
+
+Pour construire l'image vous-même : `docker build -t wiki-llm-mcp .`
+
+### Sans Docker
+
+```sh
+wiki-llm-mcp serve ./vault --init --public-url https://wiki.example.com
+wiki-llm-mcp secret ./vault    # affiche le secret généré au premier démarrage
+```
+
+Le serveur écoute sur `127.0.0.1:8787` (`--bind` pour changer) : pointez votre
+reverse proxy ou votre tunnel dessus.
+
+Pour choisir vous-même le secret, définissez la variable d'environnement
+`WIKI_LLM_MCP_SECRET`. Elle a la priorité, et rien n'est stocké.
+
+### Connecter Claude
+
+Dans Claude,
 ajoutez un connecteur personnalisé avec l'URL `https://wiki.example.com/mcp`,
 choisissez l'enregistrement automatique du client OAuth (**Register
 automatically**), puis saisissez le secret sur la page qui s'ouvre.
@@ -225,7 +264,9 @@ sequenceDiagram
     Claude->>Serveur: Requêtes /mcp avec le jeton d'accès
 ```
 
-- Sans un secret d'au moins 20 caractères, le mode distant refuse de démarrer.
+- Le secret généré est stocké dans `.git/wiki-llm-mcp/secret`, lisible par son
+  seul propriétaire et hors des fichiers du coffre. Un secret fourni par
+  `WIKI_LLM_MCP_SECRET` doit faire au moins 20 caractères.
 - Seules l'adresse de retour de Claude et les adresses locales peuvent recevoir
   une autorisation. `--allow-redirect-uri` permet d'autoriser un autre client.
 - Les jetons sont stockés hachés dans `.git/wiki-llm-mcp/`, jamais dans les
@@ -236,28 +277,17 @@ sequenceDiagram
   bloquées jusqu'à la fin de cette fenêtre. Les clients déjà connectés
   continuent de fonctionner.
 
-Avec Docker :
-
-```sh
-docker run --rm -u "$(id -u):$(id -g)" --read-only --cap-drop ALL \
-  --security-opt no-new-privileges --tmpfs /tmp \
-  -v "$PWD/vault:/vault" -e WIKI_LLM_MCP_SECRET -p 127.0.0.1:8787:8787 \
-  ghcr.io/tgalode/wiki-llm-mcp serve /vault \
-  --public-url https://wiki.example.com --bind 0.0.0.0:8787
-```
-
-Pour construire l'image vous-même : `docker build -t wiki-llm-mcp .`
-
 ### Changer le secret
 
 Le secret n'est que le mot de passe demandé sur la page d'autorisation. Les
 jetons sont aléatoires et n'en dépendent pas : il y a donc deux actions
 distinctes.
 
-1. **Changer le secret** : mettez une nouvelle valeur dans
-   `WIKI_LLM_MCP_SECRET` et redémarrez le serveur. Les clients déjà connectés
-   continuent de fonctionner ; le nouveau secret sera demandé à la prochaine
-   connexion d'un client.
+1. **Changer le secret** : `wiki-llm-mcp secret ./vault --new` en génère un
+   nouveau et l'affiche (ou mettez une nouvelle valeur dans
+   `WIKI_LLM_MCP_SECRET` si vous l'utilisez), puis redémarrez le serveur. Les
+   clients déjà connectés continuent de fonctionner ; le nouveau secret sera
+   demandé à la prochaine connexion d'un client.
 2. **Révoquer les sessions** : `wiki-llm-mcp revoke ./vault`. Chaque client doit
    alors se reconnecter, avec le secret en vigueur.
 

@@ -16,6 +16,9 @@ through it.
   - [Set up with an AI agent](#set-up-with-an-ai-agent)
 - [Usage](#usage)
 - [Remote mode (Claude mobile and web)](#remote-mode-claude-mobile-and-web)
+  - [With Docker Compose](#with-docker-compose)
+  - [Without Docker](#without-docker)
+  - [Connecting Claude](#connecting-claude)
   - [Rotating the secret](#rotating-the-secret)
 - [Development](#development)
 - [License](#license)
@@ -115,10 +118,11 @@ Then:
    `wiki-llm-mcp serve <absolute vault path>`, using absolute paths (Claude
    Desktop: `claude_desktop_config.json`; Claude Code:
    `claude mcp add wiki -- <binary> serve <vault>`).
-4. Remote mode, only if I asked for it: generate a secret with
-   `openssl rand -base64 32`, store it in a file only I can read, never print
-   it in the conversation or commit it, and start the server with
-   `--public-url` as the README describes. Do not expose anything publicly
+4. Remote mode, only if I asked for it: start the server as the README's
+   Remote mode section describes (Docker Compose if Docker is there, the
+   binary with `--public-url` otherwise). It generates its own secret: tell me
+   the command that displays it, and never print the secret in the
+   conversation or commit it. Do not expose anything publicly
    yourself: tell me which address and port my proxy or tunnel must point to,
    then give me the connector URL (`<public url>/mcp`) to add in Claude.
 5. Verify: `wiki-llm-mcp --version` works, the vault's `git log` shows the
@@ -139,6 +143,7 @@ wiki-llm-mcp serve ./vault   # serve it over stdio
 
 `init` adds `raw/`, `wiki/`, `WIKI.md` and a generated `WIKI-INDEX.md`, and sets
 up Git. Existing notes stay where they are; their original state is committed first.
+`serve --init` does it on the first start, if the folder is not ready yet.
 
 `WIKI.md` holds the rules given to the LLM when it connects. Edit it to change
 how your wiki is maintained. The LLM cannot modify it.
@@ -185,15 +190,47 @@ flowchart LR
     vault -. "pull / push (optional)" .-> remote[("Git remote")]
 ```
 
+### With Docker Compose
+
 ```sh
-export WIKI_LLM_MCP_SECRET="$(openssl rand -base64 32)"   # keep it somewhere safe
-wiki-llm-mcp serve ./vault --public-url https://wiki.example.com
+mkdir wiki-llm-mcp && cd wiki-llm-mcp
+curl -LO https://raw.githubusercontent.com/tgalode/wiki-llm-mcp/main/deploy/compose.yaml
+curl -L -o .env https://raw.githubusercontent.com/tgalode/wiki-llm-mcp/main/deploy/.env.example
+nano .env                 # set PUBLIC_URL
+mkdir -p vault            # or set VAULT to your existing notes
+docker compose up -d
+docker compose exec wiki wiki-llm-mcp secret /vault
 ```
 
-The server listens on `127.0.0.1:8787` (`--bind` to change it). In Claude, add a
-custom connector with the URL `https://wiki.example.com/mcp`, choose
-**Register automatically** for the OAuth client, and enter the secret on the
-page that opens.
+The first start prepares the vault and generates the secret; the last command
+prints it. Point your reverse proxy at `127.0.0.1:8787`.
+
+Without a reverse proxy, the same file can run a
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/):
+set `TUNNEL_TOKEN` in `.env`, give the tunnel's public hostname the service
+`http://wiki:8787`, and start with `docker compose --profile tunnel up -d`. No
+port has to be opened on the server.
+
+To build the image yourself: `docker build -t wiki-llm-mcp .`
+
+### Without Docker
+
+```sh
+wiki-llm-mcp serve ./vault --init --public-url https://wiki.example.com
+wiki-llm-mcp secret ./vault    # prints the secret generated on the first start
+```
+
+The server listens on `127.0.0.1:8787` (`--bind` to change it): point your
+reverse proxy or tunnel at it.
+
+To choose the secret yourself, set the `WIKI_LLM_MCP_SECRET` environment
+variable. It takes precedence, and nothing is stored.
+
+### Connecting Claude
+
+In Claude, add a custom connector with the URL `https://wiki.example.com/mcp`,
+choose **Register automatically** for the OAuth client, and enter the secret on
+the page that opens.
 
 The secret is typed once, in your browser, and never reaches Claude:
 
@@ -212,7 +249,9 @@ sequenceDiagram
     Claude->>Server: /mcp requests with the access token
 ```
 
-- Without a secret of at least 20 characters, remote mode refuses to start.
+- The generated secret is stored in `.git/wiki-llm-mcp/secret`, readable by its
+  owner only and outside the vault's files. A secret set through
+  `WIKI_LLM_MCP_SECRET` must be at least 20 characters long.
 - Only Claude's callback and local addresses can receive an authorization. Use
   `--allow-redirect-uri` to allow another client.
 - Tokens are stored hashed inside `.git/wiki-llm-mcp/`, never in the vault's files.
@@ -221,26 +260,15 @@ sequenceDiagram
 - After 10 failed logins in 15 minutes, new logins are blocked for the rest of
   that window. Clients already connected keep working.
 
-With Docker:
-
-```sh
-docker run --rm -u "$(id -u):$(id -g)" --read-only --cap-drop ALL \
-  --security-opt no-new-privileges --tmpfs /tmp \
-  -v "$PWD/vault:/vault" -e WIKI_LLM_MCP_SECRET -p 127.0.0.1:8787:8787 \
-  ghcr.io/tgalode/wiki-llm-mcp serve /vault \
-  --public-url https://wiki.example.com --bind 0.0.0.0:8787
-```
-
-To build the image yourself: `docker build -t wiki-llm-mcp .`
-
 ### Rotating the secret
 
 The secret is only the password asked on the authorization page. Tokens are
 random and do not depend on it, so there are two separate actions:
 
-1. **Change the secret**: set a new value in `WIKI_LLM_MCP_SECRET` and restart
-   the server. Clients already connected keep working; the new secret is asked
-   the next time a client connects.
+1. **Change the secret**: `wiki-llm-mcp secret ./vault --new` generates and
+   prints a new one (or set a new value in `WIKI_LLM_MCP_SECRET` if you use
+   it), then restart the server. Clients already connected keep working; the
+   new secret is asked the next time a client connects.
 2. **Revoke the sessions**: `wiki-llm-mcp revoke ./vault`. Every client must
    then connect again, with the current secret.
 
