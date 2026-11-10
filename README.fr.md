@@ -32,12 +32,20 @@ impossible de supprimer une note par son intermédiaire.
   exige la révision de la page telle qu'elle a été lue, et est refusé si la page
   a changé depuis (dans Obsidian, ou sur un autre appareil).
 - **Garder les liens valides** quand une page est déplacée (`[[wikilinks]]` et
-  liens Markdown).
+  liens Markdown). Les sources de `raw/` ne sont jamais réécrites : un lien
+  qu'elles contiennent vers une page déplacée est signalé par un avertissement.
 - **Protéger votre travail** : vos modifications non commitées sont enregistrées
   dans leur propre commit avant que le LLM n'écrive, et ses commits ont leur
   propre auteur.
+- **Montrer ce qui a changé récemment**, d'après l'historique Git : quand,
+  quelles pages, et si le changement vient de vous ou du LLM.
 - **Synchroniser par Git** quand le coffre a un dépôt distant : pull avant
-  d'écrire, push après.
+  d'écrire, push après. Une lecture récupère aussi ce que d'autres appareils
+  ont poussé, au plus une fois par minute, et seulement si aucune fusion n'est
+  nécessaire.
+- **Servir un index à jour** : `WIKI-INDEX.md` est réécrit à chaque écriture, et
+  sa lecture liste toujours les pages telles qu'elles sont maintenant, y compris
+  celles ajoutées ou déplacées dans Obsidian depuis.
 
 Il n'y a pas d'outil de suppression. `.git`, `.obsidian` et les fichiers cachés
 sont hors d'atteinte, comme tout ce qui se trouve en dehors du coffre.

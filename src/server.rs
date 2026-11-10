@@ -8,12 +8,14 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::apply::{apply_changes, Change};
-use crate::init::RULES_FILE;
+use crate::apply::{apply_changes, sync_for_read, Change, READ_SYNC_EVERY};
+use crate::history::recent_changes;
+use crate::init::{current_index, INDEX_FILE, RULES_FILE};
 use crate::vault::{revision, Vault};
 
 const DEFAULT_LIST_LIMIT: usize = 100;
 const DEFAULT_SEARCH_LIMIT: usize = 20;
+const DEFAULT_HISTORY_LIMIT: usize = 20;
 const MAX_INSTRUCTIONS_CHARS: usize = 16_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -50,6 +52,22 @@ pub struct ApplyChangesRequest {
     pub reason: String,
     /// The changes, applied in order: all of them or none.
     pub changes: Vec<Change>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "self::schemars")]
+pub struct RecentChangesRequest {
+    /// Only changes made since this date, e.g. "2026-11-09" or
+    /// "2026-11-09T14:30:00".
+    pub since: Option<String>,
+    /// Maximum number of commits to return (1 to 100, default 20).
+    pub limit: Option<usize>,
+}
+
+/// A read first takes in what other devices pushed. It never fails for that:
+/// offline, the vault is read as it is.
+fn fresh(vault: &Vault) {
+    let _ = sync_for_read(vault, READ_SYNC_EVERY);
 }
 
 #[derive(Debug, Serialize)]
@@ -107,6 +125,7 @@ impl WikiServer {
     ) -> Result<String, String> {
         let vault = self.vault.clone();
         blocking(move || {
+            fresh(&vault);
             to_json(&vault.list_pages(
                 req.prefix.as_deref(),
                 req.offset.unwrap_or(0),
@@ -128,7 +147,15 @@ impl WikiServer {
     ) -> Result<String, String> {
         let vault = self.vault.clone();
         blocking(move || {
-            let content = vault.read_page(&req.path).map_err(|e| e.to_string())?;
+            fresh(&vault);
+            let mut content = vault.read_page(&req.path).map_err(|e| e.to_string())?;
+            // The index file is only rewritten by a write: what is served is
+            // the catalog of the pages as they are now.
+            if Vault::normalize(&req.path).is_ok_and(|p| p.eq_ignore_ascii_case(INDEX_FILE)) {
+                if let Some(index) = current_index(&vault) {
+                    content = index;
+                }
+            }
             to_json(&Page {
                 revision: revision(&content),
                 path: req.path,
@@ -173,10 +200,39 @@ impl WikiServer {
     async fn search(&self, Parameters(req): Parameters<SearchRequest>) -> Result<String, String> {
         let vault = self.vault.clone();
         blocking(move || {
+            fresh(&vault);
             let hits = vault
                 .search(&req.query, req.limit.unwrap_or(DEFAULT_SEARCH_LIMIT))
                 .map_err(|e| e.to_string())?;
             to_json(&hits)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "List the latest changes to the pages, newest first, from the vault's \
+                       Git history: when, by whom (\"owner\" for the owner's own edits, \
+                       \"claude\" for changes made through this tool) and which pages were \
+                       created, changed, moved or deleted. Call it at the start of a task to \
+                       see what changed since your last visit, before relying on what you \
+                       read earlier. Edits the owner has not committed yet only appear after \
+                       the next write.",
+        annotations(read_only_hint = true)
+    )]
+    async fn recent_changes(
+        &self,
+        Parameters(req): Parameters<RecentChangesRequest>,
+    ) -> Result<String, String> {
+        let vault = self.vault.clone();
+        blocking(move || {
+            fresh(&vault);
+            let entries = recent_changes(
+                &vault,
+                req.since.as_deref(),
+                req.limit.unwrap_or(DEFAULT_HISTORY_LIMIT),
+            )
+            .map_err(|e| e.to_string())?;
+            to_json(&entries)
         })
         .await
     }

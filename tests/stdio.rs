@@ -62,12 +62,18 @@ fn serves_the_vault_over_the_mcp_protocol() {
     // The absence of any delete tool is a product rule: this list is on purpose.
     assert_eq!(
         names,
-        ["apply_changes", "list_pages", "read_page", "search"]
+        [
+            "apply_changes",
+            "list_pages",
+            "read_page",
+            "recent_changes",
+            "search"
+        ]
     );
     let read_only = tools
         .iter()
         .filter(|t| t["annotations"]["readOnlyHint"] == true);
-    assert_eq!(read_only.count(), 3);
+    assert_eq!(read_only.count(), 4);
 
     let mut call = |id: u32, name: &str, arguments: Value| {
         send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
@@ -91,6 +97,13 @@ fn serves_the_vault_over_the_mcp_protocol() {
         serde_json::from_str::<Value>(&text(&listed)).unwrap()["total"],
         1
     );
+
+    // The index file on disk predates topic.md, written without this tool.
+    assert!(!fs::read_to_string(vault.join("WIKI-INDEX.md"))
+        .unwrap()
+        .contains("wiki/topic"));
+    let index = call(11, "read_page", json!({"path":"WIKI-INDEX.md"}));
+    assert!(text(&index).contains("[[wiki/topic|Topic]]"), "{index}");
 
     let refused = call(6, "read_page", json!({"path":"../../etc/passwd.md"}));
     assert_eq!(refused["isError"], true);
@@ -148,6 +161,18 @@ fn serves_the_vault_over_the_mcp_protocol() {
         "{no_delete}"
     );
     assert!(vault.join("wiki/new.md").exists());
+
+    let history = call(12, "recent_changes", json!({}));
+    let history: Value = serde_json::from_str(&text(&history)).unwrap();
+    assert_eq!(history[0]["by"], "claude", "{history}");
+    assert_eq!(history[0]["message"], "add a page");
+    assert!(history[0]["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["path"] == "wiki/new.md" && p["change"] == "created"));
+    let bad_since = call(13, "recent_changes", json!({"since":"yesterday"}));
+    assert_eq!(bad_since["isError"], true, "{bad_since}");
 
     drop(stdin);
     assert!(child.wait().unwrap().success());

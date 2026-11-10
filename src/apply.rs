@@ -19,6 +19,12 @@ pub const MAX_CHANGES: usize = 200;
 const MAX_REASON_CHARS: usize = 500;
 const MAX_PATHS_IN_MESSAGE: usize = 20;
 const NETWORK_LIMIT: Duration = Duration::from_secs(60);
+/// How long a read trusts the last synchronization with the remote.
+pub const READ_SYNC_EVERY: Duration = Duration::from_secs(60);
+/// A read waits less for the network than a write does.
+const READ_SYNC_LIMIT: Duration = Duration::from_secs(15);
+const SYNC_MARKER: &str = "wiki-llm-mcp.synced";
+pub const AUTHOR_NAME: &str = "Claude (wiki-llm-mcp)";
 const AUTHOR: &str = "Claude (wiki-llm-mcp) <wiki-llm-mcp@localhost>";
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -99,6 +105,7 @@ struct Plan<'a> {
     written: BTreeSet<String>,
     removed: BTreeSet<String>,
     links_updated: usize,
+    warnings: Vec<String>,
 }
 
 impl<'a> Plan<'a> {
@@ -110,6 +117,7 @@ impl<'a> Plan<'a> {
             written: BTreeSet::new(),
             removed: BTreeSet::new(),
             links_updated: 0,
+            warnings: Vec::new(),
         }
     }
 
@@ -239,18 +247,27 @@ impl<'a> Plan<'a> {
 
         let before = self.pages.clone();
         for page in &before {
-            // Sources stay as they were; unreadable pages cannot hold rewritable links.
-            if is_raw(page) || is_protected(page) {
+            // Unreadable pages cannot hold rewritable links.
+            if is_protected(page) {
                 continue;
             }
             let Ok(content) = self.read(page) else {
                 continue;
             };
             let rewritten = rewrite_for_move(&content, page, &old, &new, &before);
-            if rewritten != content {
-                self.links_updated += 1;
-                self.set(page, rewritten);
+            if rewritten == content {
+                continue;
             }
+            // Sources stay as they were: the broken link is reported instead.
+            if is_raw(page) {
+                self.warnings.push(format!(
+                    "{page} links to {old}, which is now {new}: sources in raw/ are not \
+                     rewritten, so this link still points to the old location"
+                ));
+                continue;
+            }
+            self.links_updated += 1;
+            self.set(page, rewritten);
         }
 
         let root = self.vault.root().to_path_buf();
@@ -361,6 +378,49 @@ fn push_remote(root: &Path, warnings: &mut Vec<String>) -> bool {
     }
 }
 
+fn mark_synced(git_dir: &Path) {
+    let _ = fs::write(git_dir.join(SYNC_MARKER), "");
+}
+
+/// Before a read, takes in what other devices pushed, at most once per
+/// `max_age`: without this, only a write would bring the vault up to date.
+/// Only a fast-forward is done, so nothing is rewritten and nothing can
+/// conflict; uncommitted or unpushed work is left for the next write to
+/// reconcile. Returns whether the pages changed.
+pub fn sync_for_read(vault: &Vault, max_age: Duration) -> Result<bool> {
+    let root = vault.root();
+    let marker = root.join(".git").join(SYNC_MARKER);
+    let is_fresh = |marker: &Path| {
+        fs::metadata(marker)
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|at| at.elapsed().is_ok_and(|age| age < max_age))
+    };
+    // The usual case costs one file lookup, and a vault without Git nothing more.
+    if !root.join(".git").is_dir() || is_fresh(&marker) {
+        return Ok(false);
+    }
+    let git_dir = check_repository(root)?;
+    let lock = File::create(git_dir.join("wiki-llm-mcp.lock")).context("could not create lock")?;
+    lock.lock().context("could not take the write lock")?;
+    if is_fresh(&marker) {
+        return Ok(false);
+    }
+    // Marked first: an unreachable remote is not tried again by every read.
+    mark_synced(&git_dir);
+    if !has_upstream(root)? {
+        return Ok(false);
+    }
+    let fetched = git_network(root, &["fetch", "--quiet"], READ_SYNC_LIMIT);
+    if !fetched.is_ok_and(|(status, _)| status.success()) {
+        return Ok(false);
+    }
+    let before = git_stdout(root, &["rev-parse", "HEAD"])?;
+    // Git itself refuses when the histories diverged or when a file changed
+    // on both sides, and leaves everything as it was.
+    let _ = git(root, &["merge", "--ff-only", "--quiet", "@{upstream}"])?;
+    Ok(git_stdout(root, &["rev-parse", "HEAD"])? != before)
+}
+
 /// Restores files to their previous state after a failed write.
 fn undo(previous: &[(PathBuf, Option<Vec<u8>>)]) {
     for (path, content) in previous.iter().rev() {
@@ -459,6 +519,7 @@ pub fn apply_changes(vault: &Vault, changes: &[Change], reason: &str) -> Result<
     let upstream = has_upstream(root)?;
     if upstream {
         pull_remote(root, &mut warnings)?;
+        mark_synced(&git_dir);
     }
 
     // Validated against the synchronized vault, before anything is written.
@@ -470,6 +531,7 @@ pub fn apply_changes(vault: &Vault, changes: &[Change], reason: &str) -> Result<
     let commit = write_and_commit(vault, &plan, &reason)?;
     // Also sends commits that an earlier offline call could not push.
     let pushed = upstream && push_remote(root, &mut warnings);
+    warnings.extend(plan.warnings.iter().cloned());
 
     let revisions = plan
         .written
