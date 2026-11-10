@@ -4,7 +4,6 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
@@ -144,10 +143,15 @@ fn a_secret_is_generated_once_and_kept_across_restarts() {
     assert!(found);
     assert!(secret.len() >= 40, "{secret}");
     let file = vault.join(".git/wiki-llm-mcp/secret");
-    assert_eq!(
-        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    assert!(file.is_file());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
     // Out of the pages and out of what Git tracks.
     let status = Command::new("git")
         .arg("-C")

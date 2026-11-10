@@ -1,4 +1,5 @@
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::Path;
 
@@ -95,6 +96,7 @@ fn errors_do_not_reveal_the_vault_location() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn refuses_symlinks_escaping_or_reaching_hidden_files() {
     let (dir, vault) = fixture();
@@ -160,4 +162,25 @@ fn snippets_do_not_split_multibyte_characters() {
         vault.search("clé", 1).unwrap()[0].snippet.chars().count(),
         200
     );
+}
+
+#[test]
+fn recognizes_the_names_windows_resolves_to_another_file() {
+    use wiki_llm_mcp::vault::is_windows_alias;
+    for name in ["GIT~1", "note.md:stream", "note.md.", "note.md ", "a:b.md"] {
+        assert!(is_windows_alias(name), "{name}");
+    }
+    for name in ["note.md", "my note.md", "v1.2 notes.md", "été.md"] {
+        assert!(!is_windows_alias(name), "{name}");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn refuses_windows_aliases_of_protected_files() {
+    let (_dir, vault) = fixture();
+    for path in ["GIT~1/config.md", "note.md:stream.md", "wiki./a.md"] {
+        assert!(vault.read_page(path).is_err(), "should refuse {path}");
+        assert!(Vault::normalize(path).is_err(), "should refuse {path}");
+    }
 }

@@ -50,12 +50,32 @@ fn is_hidden(name: &str) -> bool {
     name.starts_with('.')
 }
 
+/// The real location of a path. On Windows the standard library answers
+/// `\\?\C:\notes`, a form that Git refuses and that never compares equal to the
+/// plain `C:\notes`: the prefix is dropped.
+pub fn canonical(path: &Path) -> std::io::Result<PathBuf> {
+    let real = path.canonicalize()?;
+    #[cfg(windows)]
+    if let Some(plain) = real.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        if !plain.starts_with(r"UNC\") {
+            return Ok(PathBuf::from(plain));
+        }
+    }
+    Ok(real)
+}
+
+/// Names that Windows resolves to another file than the one written: an
+/// alternate data stream (`a.md:x`), a short alias (`GIT~1` is `.git`), or a
+/// name whose trailing dots and spaces are dropped.
+pub fn is_windows_alias(name: &str) -> bool {
+    name.contains(':') || name.contains('~') || name.ends_with('.') || name.ends_with(' ')
+}
+
 impl Vault {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let root = path
-            .canonicalize()
-            .with_context(|| format!("vault not found: {}", path.display()))?;
+        let root =
+            canonical(path).with_context(|| format!("vault not found: {}", path.display()))?;
         if !root.is_dir() {
             bail!("vault is not a directory: {}", path.display());
         }
@@ -79,6 +99,11 @@ impl Vault {
         let mut parts = Vec::new();
         for component in path.components() {
             match component {
+                Component::Normal(part)
+                    if cfg!(windows) && is_windows_alias(&part.to_string_lossy()) =>
+                {
+                    bail!("invalid path: this name is not safe on Windows")
+                }
                 Component::Normal(part) if !is_hidden(&part.to_string_lossy()) => {
                     parts.push(part.to_string_lossy().into_owned());
                 }
@@ -112,10 +137,7 @@ impl Vault {
     fn resolve(&self, rel: &str) -> Result<PathBuf> {
         Self::normalize(rel)?;
         let path = Path::new(rel);
-        let real = self
-            .root
-            .join(path)
-            .canonicalize()
+        let real = canonical(&self.root.join(path))
             .map_err(|_| anyhow::anyhow!("page not found: {rel}"))?;
         // A symlink may lead outside the vault, or to a hidden or non-Markdown file.
         let inside = real

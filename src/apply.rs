@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::git::{commit_staged, git, git_network, git_ok, git_stdout, has_staged_changes};
 use crate::init::{refresh_index, INDEX_FILE, RULES_FILE};
 use crate::links::{rebase_own_links, rewrite_for_move};
-use crate::vault::{revision, Vault, MAX_PAGE_BYTES};
+use crate::vault::{canonical, revision, Vault, MAX_PAGE_BYTES};
 
 pub const MAX_CHANGES: usize = 200;
 const MAX_REASON_CHARS: usize = 500;
@@ -283,8 +283,7 @@ fn check_reason(reason: &str) -> Result<String> {
 fn check_repository(root: &Path) -> Result<PathBuf> {
     let top = git(root, &["rev-parse", "--show-toplevel"])?;
     let is_own_repo = top.status.success()
-        && Path::new(String::from_utf8_lossy(&top.stdout).trim())
-            .canonicalize()
+        && canonical(Path::new(String::from_utf8_lossy(&top.stdout).trim()))
             .is_ok_and(|top| top == root);
     if !is_own_repo {
         bail!("this vault has no Git repository: run `wiki-llm-mcp init` before writing");
@@ -293,6 +292,7 @@ fn check_repository(root: &Path) -> Result<PathBuf> {
         bail!("the vault's Git repository is not on a branch");
     }
     let git_dir = PathBuf::from(git_stdout(root, &["rev-parse", "--absolute-git-dir"])?);
+    let git_dir = canonical(&git_dir).unwrap_or(git_dir);
     for marker in [
         "MERGE_HEAD",
         "rebase-merge",

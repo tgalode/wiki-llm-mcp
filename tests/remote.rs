@@ -16,7 +16,7 @@ use tower::ServiceExt;
 use wiki_llm_mcp::init::init;
 use wiki_llm_mcp::oauth::{normalize_public_url, Lifetimes, OAuthConfig};
 use wiki_llm_mcp::remote::{build_app, revoke_all, state_dir};
-use wiki_llm_mcp::vault::Vault;
+use wiki_llm_mcp::vault::{canonical, Vault};
 
 const BASE: &str = "https://wiki.example.com";
 const HOST: &str = "wiki.example.com";
@@ -524,7 +524,6 @@ async fn revoking_disconnects_clients_at_once() {
 
 #[tokio::test]
 async fn tokens_are_stored_hashed_private_and_out_of_git() {
-    use std::os::unix::fs::PermissionsExt;
     let h = harness();
     let client = h.client().await;
     let tokens = h.tokens(&client).await;
@@ -536,15 +535,19 @@ async fn tokens_are_stored_hashed_private_and_out_of_git() {
     for field in ["access_token", "refresh_token"] {
         assert!(!stored.contains(tokens[field].as_str().unwrap()));
     }
-    assert_eq!(
-        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    assert_eq!(
-        fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
-        0o700
-    );
-    assert!(dir.starts_with(h.dir.path().canonicalize().unwrap().join(".git")));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+    assert!(dir.starts_with(canonical(h.dir.path()).unwrap().join(".git")));
 }
 
 #[tokio::test]

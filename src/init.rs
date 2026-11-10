@@ -7,7 +7,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use crate::git::{commit_staged, git, git_ok};
-use crate::vault::Vault;
+use crate::vault::{canonical, Vault};
 
 pub const RULES_FILE: &str = "WIKI.md";
 pub const INDEX_FILE: &str = "WIKI-INDEX.md";
@@ -106,11 +106,13 @@ pub fn is_initialized(path: &Path) -> bool {
 
 pub fn init(path: &Path) -> Result<InitReport> {
     fs::create_dir_all(path).with_context(|| format!("could not create {}", path.display()))?;
-    let root = path.canonicalize()?;
+    let root = canonical(path)?;
 
     // Everything that can refuse comes first, so a refusal leaves the vault untouched.
     // A folder picked by mistake would have all of its files committed.
-    let home = std::env::var_os("HOME").and_then(|home| Path::new(&home).canonicalize().ok());
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .and_then(|home| canonical(Path::new(&home)).ok());
     if root.parent().is_none() || home.as_deref() == Some(root.as_path()) {
         bail!(
             "a home folder or a whole disk cannot be a vault: choose the folder that holds \
@@ -128,7 +130,7 @@ pub fn init(path: &Path) -> Result<InitReport> {
     let is_repo = toplevel.status.success();
     if is_repo {
         let top = String::from_utf8_lossy(&toplevel.stdout);
-        if Path::new(top.trim()).canonicalize()? != root {
+        if canonical(Path::new(top.trim()))? != root {
             bail!("this folder is inside another Git repository: the vault must have its own");
         }
     }
@@ -138,6 +140,9 @@ pub fn init(path: &Path) -> Result<InitReport> {
         .any(|e| e.file_name() != ".git");
     if !is_repo {
         git_ok(&root, &["init", "-q", "-b", "main"])?;
+        // Notes keep the line endings they were written with, on every device:
+        // a page must not change because Git checked it out again.
+        git_ok(&root, &["config", "core.autocrlf", "false"])?;
     }
 
     // The ignore rules go first, so Obsidian's state stays out of the snapshot.

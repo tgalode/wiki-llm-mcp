@@ -8,13 +8,17 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
-const TOOL_IDENTITY: [&str; 6] = [
+const TOOL_IDENTITY: [&str; 8] = [
     "-c",
     "user.name=wiki-llm-mcp",
     "-c",
     "user.email=wiki-llm-mcp@localhost",
     "-c",
     "commit.gpgsign=false",
+    // Git for Windows converts line endings by default: pages would change
+    // on their own between a write and the next read.
+    "-c",
+    "core.autocrlf=false",
 ];
 
 fn command(root: &Path, args: &[&str]) -> Command {

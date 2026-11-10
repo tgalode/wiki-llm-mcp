@@ -1,4 +1,5 @@
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::Path;
 use std::process::Command;
@@ -190,6 +191,7 @@ fn refuses_paths_outside_visible_markdown() {
     let (dir, vault) = vault_with(&[]);
     fs::create_dir(dir.path().join("elsewhere")).unwrap();
     let outside = tempdir().unwrap();
+    #[cfg(unix)]
     symlink(outside.path(), dir.path().join("link")).unwrap();
     for path in [
         "../x.md",
@@ -207,6 +209,7 @@ fn refuses_paths_outside_visible_markdown() {
     assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
 }
 
+#[cfg(unix)]
 #[test]
 fn refuses_writing_through_a_symlinked_page() {
     let (dir, vault) = vault_with(&[("wiki/real.md", "real")]);
@@ -540,6 +543,7 @@ fn a_failing_commit_restores_the_vault() {
     let hook = dir.path().join(".git/hooks/pre-commit");
     fs::create_dir_all(hook.parent().unwrap()).unwrap();
     fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    #[cfg(unix)]
     fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
     let before = commits(dir.path());
 

@@ -19,7 +19,7 @@ use crate::oauth::{
     require_token, token, OAuth, OAuthConfig, TokenStore,
 };
 use crate::server::WikiServer;
-use crate::vault::Vault;
+use crate::vault::{canonical, Vault};
 
 const MAX_MCP_BODY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OAUTH_BODY_BYTES: usize = 64 * 1024;
@@ -32,7 +32,8 @@ pub fn state_dir(vault: &Vault) -> Result<PathBuf> {
 fn state_dir_of(root: &Path) -> Result<PathBuf> {
     let git_dir = git_stdout(root, &["rev-parse", "--absolute-git-dir"])
         .context("this vault has no Git repository: run `wiki-llm-mcp init` first")?;
-    Ok(PathBuf::from(git_dir).join("wiki-llm-mcp"))
+    let git_dir = PathBuf::from(git_dir);
+    Ok(canonical(&git_dir).unwrap_or(git_dir).join("wiki-llm-mcp"))
 }
 
 pub fn build_app(vault: Vault, config: OAuthConfig) -> Result<Router> {
