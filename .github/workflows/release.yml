@@ -63,6 +63,38 @@ jobs:
           tar -czf "$archive" -C "target/$TARGET/release" wiki-llm-mcp
           gh release upload "$TAG" "$archive"
 
+  # One-click extension for Claude Desktop: a universal macOS binary and the
+  # manifest, in a .mcpb archive.
+  bundle:
+    needs: release
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal \
+            --target aarch64-apple-darwin --target x86_64-apple-darwin
+          rustup default stable
+      - name: Build a universal binary
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          mkdir -p bundle/server
+          lipo -create -output bundle/server/wiki-llm-mcp \
+            target/aarch64-apple-darwin/release/wiki-llm-mcp \
+            target/x86_64-apple-darwin/release/wiki-llm-mcp
+          codesign --force --sign - bundle/server/wiki-llm-mcp
+          bundle/server/wiki-llm-mcp --version
+      - name: Pack and upload the bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jq --arg version "${TAG#v}" '.version = $version' mcpb/manifest.json > bundle/manifest.json
+          npx -y @anthropic-ai/mcpb@2.1.2 pack bundle wiki-llm-mcp.mcpb
+          gh release upload "$TAG" wiki-llm-mcp.mcpb
+
   image:
     needs: release
     runs-on: ubuntu-latest

@@ -1,0 +1,50 @@
+{
+  "manifest_version": "0.3",
+  "name": "wiki-llm-mcp",
+  "display_name": "Wiki (Markdown / Obsidian vault)",
+  "version": "0.0.0",
+  "description": "Lets Claude read, search and maintain a folder of Markdown notes. Every change is a Git commit, and notes cannot be deleted.",
+  "long_description": "Point it at an Obsidian vault or any folder of Markdown notes. Claude can read and search the pages, create new ones, edit them and move them while keeping links valid. Every change is a Git commit of its own, your uncommitted edits are saved first, and there is no delete tool.\n\nThe folder is prepared on the first start: it becomes a Git repository and gains `raw/`, `wiki/`, `WIKI.md` (the rules Claude follows, which you can edit) and a generated `WIKI-INDEX.md`. Existing notes stay where they are.\n\nRequires `git` on this computer.",
+  "author": {
+    "name": "Théo Galodé",
+    "url": "https://github.com/tgalode"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tgalode/wiki-llm-mcp"
+  },
+  "homepage": "https://github.com/tgalode/wiki-llm-mcp",
+  "documentation": "https://github.com/tgalode/wiki-llm-mcp#readme",
+  "support": "https://github.com/tgalode/wiki-llm-mcp/issues",
+  "server": {
+    "type": "binary",
+    "entry_point": "server/wiki-llm-mcp",
+    "mcp_config": {
+      "command": "${__dirname}/server/wiki-llm-mcp",
+      "args": ["serve", "--init", "${user_config.vault}"],
+      "env": {}
+    }
+  },
+  "user_config": {
+    "vault": {
+      "type": "directory",
+      "title": "Folder of notes",
+      "description": "Your Obsidian vault, or the folder that holds your Markdown notes (it may be empty). It becomes a Git repository: choose the folder of notes itself, not your home folder.",
+      "required": true
+    }
+  },
+  "tools": [
+    { "name": "list_pages", "description": "List the Markdown pages of the vault" },
+    { "name": "read_page", "description": "Read one page and its revision" },
+    { "name": "search", "description": "Search the vault by keywords" },
+    {
+      "name": "apply_changes",
+      "description": "Create, edit, append to, update or move pages, in one Git commit"
+    }
+  ],
+  "keywords": ["wiki", "obsidian", "markdown", "notes", "git", "knowledge base"],
+  "license": "MIT",
+  "compatibility": {
+    "platforms": ["darwin"]
+  }
+}

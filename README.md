@@ -66,6 +66,12 @@ flowchart TD
 
 You need `git` on the machine that serves the vault. Then pick one of:
 
+**The Claude Desktop extension**, on macOS: download
+[`wiki-llm-mcp.mcpb`](https://github.com/tgalode/wiki-llm-mcp/releases/latest/download/wiki-llm-mcp.mcpb),
+open it with Claude Desktop (or drop it in Settings > Extensions), and choose
+your folder of notes. Nothing else to install or configure: the folder is
+prepared on the first start.
+
 **A prebuilt binary**, for Linux x86_64 (static, any distribution) or macOS on
 Apple silicon:
 

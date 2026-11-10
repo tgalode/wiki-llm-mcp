@@ -69,6 +69,12 @@ flowchart TD
 
 Il faut `git` sur la machine qui sert le coffre. Ensuite, au choix :
 
+**L'extension Claude Desktop**, sur macOS : téléchargez
+[`wiki-llm-mcp.mcpb`](https://github.com/tgalode/wiki-llm-mcp/releases/latest/download/wiki-llm-mcp.mcpb),
+ouvrez-le avec Claude Desktop (ou déposez-le dans Réglages > Extensions), puis
+choisissez votre dossier de notes. Rien d'autre à installer ni à configurer : le
+dossier est préparé au premier démarrage.
+
 **Un binaire précompilé**, pour Linux x86_64 (statique, toutes distributions) ou
 macOS sur puce Apple :
 
