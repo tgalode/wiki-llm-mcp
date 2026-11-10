@@ -99,6 +99,11 @@ fn create_kept_dir(root: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether `init` already ran on this folder.
+pub fn is_initialized(path: &Path) -> bool {
+    path.join(".git").exists() && path.join(INDEX_FILE).exists()
+}
+
 pub fn init(path: &Path) -> Result<InitReport> {
     fs::create_dir_all(path).with_context(|| format!("could not create {}", path.display()))?;
     let root = path.canonicalize()?;

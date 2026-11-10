@@ -1,12 +1,15 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use rmcp::{transport::stdio, ServiceExt};
 use wiki_llm_mcp::{
-    init::init,
-    oauth::{check_secret, normalize_public_url, Lifetimes, OAuthConfig, SECRET_ENV},
+    init::{init, is_initialized},
+    oauth::{
+        check_secret, create_secret, normalize_public_url, stored_secret, Lifetimes, OAuthConfig,
+        SECRET_ENV,
+    },
     remote,
     server::WikiServer,
     vault::Vault,
@@ -27,8 +30,12 @@ enum Commands {
     /// Serve a vault: over stdio by default, over HTTP with --public-url.
     Serve {
         path: PathBuf,
-        /// HTTPS origin clients reach this server at. Enables remote mode and
-        /// requires the WIKI_LLM_MCP_SECRET environment variable.
+        /// Prepare the vault first, as `init` does, if it is not ready yet.
+        #[arg(long)]
+        init: bool,
+        /// HTTPS origin clients reach this server at. Enables remote mode. The
+        /// secret comes from the WIKI_LLM_MCP_SECRET environment variable, or
+        /// is generated and stored on the first start: see `secret`.
         #[arg(long)]
         public_url: Option<String>,
         /// Address to listen on in remote mode.
@@ -40,6 +47,31 @@ enum Commands {
     },
     /// Disconnect every remote client of a vault.
     Revoke { path: PathBuf },
+    /// Print the secret that was generated for a vault served without
+    /// WIKI_LLM_MCP_SECRET.
+    Secret {
+        path: PathBuf,
+        /// Generate a new secret. Restart the server to apply it.
+        #[arg(long)]
+        new: bool,
+    },
+}
+
+/// The variable counts only when it holds something: an empty value in an
+/// environment file means it is not used.
+fn secret_from_env() -> Option<String> {
+    std::env::var(SECRET_ENV).ok().filter(|s| !s.is_empty())
+}
+
+fn open_vault(path: &Path, prepare: bool) -> Result<Vault> {
+    if prepare && !is_initialized(path) {
+        let report = init(path)?;
+        eprintln!(
+            "wiki-llm-mcp: vault prepared, {} page(s) indexed",
+            report.pages_indexed
+        );
+    }
+    Vault::open(path)
 }
 
 #[tokio::main]
@@ -58,30 +90,46 @@ async fn main() -> Result<()> {
         }
         Commands::Serve {
             path,
+            init,
             public_url: None,
             ..
         } => {
             // stdout carries the MCP protocol: anything human goes to stderr.
-            let server = WikiServer::new(Vault::open(&path)?);
+            let server = WikiServer::new(open_vault(&path, init)?);
             eprintln!("wiki-llm-mcp: serving {} over stdio", path.display());
             server.serve(stdio()).await?.waiting().await?;
         }
         Commands::Serve {
             path,
+            init,
             public_url: Some(public_url),
             bind,
             allow_redirect_uri,
         } => {
-            // In the environment: a command-line argument is visible to every process.
-            let secret = std::env::var(SECRET_ENV)
-                .with_context(|| format!("remote mode requires the {SECRET_ENV} variable"))?;
-            check_secret(&secret)?;
             let public_url = normalize_public_url(&public_url)?;
-            let vault = Vault::open(&path)?;
+            let vault = open_vault(&path, init)?;
+            let state_dir = remote::state_dir(&vault)?;
+            // Never a command-line argument: those are visible to every process.
+            let secret = match secret_from_env() {
+                Some(secret) => secret,
+                None => match stored_secret(&state_dir) {
+                    Some(secret) => secret,
+                    None => {
+                        let secret = create_secret(&state_dir)?;
+                        eprintln!(
+                            "wiki-llm-mcp: no {SECRET_ENV}, so a secret was generated. \
+                             Display it with: wiki-llm-mcp secret {}",
+                            path.display()
+                        );
+                        secret
+                    }
+                },
+            };
+            check_secret(&secret)?;
             let config = OAuthConfig {
                 public_url,
                 secret,
-                state_dir: remote::state_dir(&vault)?,
+                state_dir,
                 extra_redirects: allow_redirect_uri,
                 lifetimes: Lifetimes::default(),
             };
@@ -90,6 +138,28 @@ async fn main() -> Result<()> {
         Commands::Revoke { path } => {
             let count = remote::revoke_all(&Vault::open(&path)?)?;
             println!("{count} session(s) revoked");
+        }
+        Commands::Secret { path, new } => {
+            let state_dir = remote::state_dir(&Vault::open(&path)?)?;
+            if secret_from_env().is_some() {
+                eprintln!(
+                    "wiki-llm-mcp: {SECRET_ENV} is set and takes precedence over the stored secret"
+                );
+            }
+            let secret = if new {
+                let secret = create_secret(&state_dir)?;
+                eprintln!(
+                    "wiki-llm-mcp: new secret stored. Restart the server to apply it; \
+                     `revoke` disconnects the clients already connected"
+                );
+                secret
+            } else {
+                stored_secret(&state_dir).context(
+                    "no stored secret: the server was never started in remote mode without \
+                     the environment variable. `--new` generates one",
+                )?
+            };
+            println!("{secret}");
         }
     }
     Ok(())

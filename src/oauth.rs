@@ -107,6 +107,32 @@ fn same_secret(a: &str, b: &str) -> bool {
     sha256(a).ct_eq(&sha256(b)).into()
 }
 
+// --------------------------------------------------------------------- secret
+
+const SECRET_FILE: &str = "secret";
+
+/// The secret kept beside the tokens, for a server started without the
+/// environment variable. `None` when there is none yet.
+pub fn stored_secret(state_dir: &Path) -> Option<String> {
+    fs::read_to_string(state_dir.join(SECRET_FILE))
+        .ok()
+        .map(|secret| secret.trim().to_string())
+        .filter(|secret| !secret.is_empty())
+}
+
+/// Generates a secret and stores it, replacing the previous one. A running
+/// server keeps the one it started with.
+pub fn create_secret(state_dir: &Path) -> Result<String> {
+    fs::create_dir_all(state_dir).context("could not create the state directory")?;
+    restrict(state_dir, 0o700)?;
+    let secret = random_token()?;
+    let temporary = state_dir.join("secret.tmp");
+    fs::write(&temporary, format!("{secret}\n")).context("could not store the secret")?;
+    restrict(&temporary, 0o600)?;
+    fs::rename(&temporary, state_dir.join(SECRET_FILE)).context("could not store the secret")?;
+    Ok(secret)
+}
+
 // ---------------------------------------------------------------- token store
 
 #[derive(Debug, Default, Serialize, Deserialize)]
