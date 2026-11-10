@@ -18,6 +18,69 @@ through it.
 There is no delete tool. `.git`, `.obsidian` and hidden files are out of reach,
 as is anything outside the vault.
 
+## Install
+
+You need `git` on the machine that serves the vault, and either a Rust
+toolchain or Docker to build.
+
+```sh
+git clone https://github.com/tgalode/wiki-llm-mcp
+cd wiki-llm-mcp
+cargo install --path . --locked   # installs ~/.cargo/bin/wiki-llm-mcp
+wiki-llm-mcp --version
+```
+
+Without Rust, build the image instead (`docker build -t wiki-llm-mcp .`) and
+run it as shown under [Remote mode](#remote-mode-claude-mobile-and-web).
+
+Then follow [Usage](#usage), or let an agent do it for you.
+
+### Set up with an AI agent
+
+Paste this into a coding agent (Claude Code or similar) running on the machine
+that holds your vault:
+
+```text
+Set up wiki-llm-mcp for me: an MCP server that lets Claude read, search and
+maintain a Markdown/Obsidian vault, committing every change to Git.
+Source and documentation: https://github.com/tgalode/wiki-llm-mcp (read its
+README first; it is the reference for every command below).
+
+Before doing anything, ask me:
+1. The path of the vault: an existing folder of notes, or a new folder to create.
+2. Whether I want local mode only (Claude Desktop / Claude Code on this
+   machine) or also remote mode (Claude mobile and web, which needs a public
+   HTTPS address that I must provide through a reverse proxy or a tunnel).
+
+Then:
+1. Check that git is installed. Build the binary with
+   `cargo install --path . --locked` from a clone of the repository, or build
+   the Docker image if there is no Rust toolchain. Do not install a toolchain
+   or any system package without asking me.
+2. Run `wiki-llm-mcp init <vault>`. It keeps my existing notes where they are
+   and commits their original state first. If it refuses (the folder is inside
+   another Git repository, or a WIKI-INDEX.md it did not generate already
+   exists), stop and tell me why: do not move, rename or delete anything to get
+   around it.
+3. Local mode: register the server in my MCP client with the command
+   `wiki-llm-mcp serve <absolute vault path>`, using absolute paths (Claude
+   Desktop: `claude_desktop_config.json`; Claude Code:
+   `claude mcp add wiki -- <binary> serve <vault>`).
+4. Remote mode, only if I asked for it: generate a secret with
+   `openssl rand -base64 32`, store it in a file only I can read, never print
+   it in the conversation or commit it, and start the server with
+   `--public-url` as the README describes. Do not expose anything publicly
+   yourself: tell me which address and port my proxy or tunnel must point to,
+   then give me the connector URL (`<public url>/mcp`) to add in Claude.
+5. Verify: `wiki-llm-mcp --version` works, the vault's `git log` shows the
+   setup commit, and the server starts without error.
+
+Never edit or delete my notes during setup. Finish by telling me what you
+installed and where, how the server is started, where the secret is kept (if
+any), and that WIKI.md in the vault holds the rules Claude follows, which I can
+edit.
+```
+
 ## Usage
 
 ```sh
