@@ -32,9 +32,18 @@ through it.
   revision of the page as it was read, and is refused if the page changed since
   (in Obsidian, or on another device).
 - **Keep links valid** when a page moves (`[[wikilinks]]` and Markdown links).
+  Sources in `raw/` are never rewritten: a link they hold to a moved page is
+  reported as a warning instead.
 - **Protect your work**: uncommitted edits are saved in their own commit before
   the LLM writes, and its commits have their own author.
-- **Sync through Git** when the vault has a remote: pull before writing, push after.
+- **Show what changed lately**, from the Git history: when, which pages, and
+  whether the change is yours or the LLM's.
+- **Sync through Git** when the vault has a remote: pull before writing, push
+  after. A read also takes in what other devices pushed, at most once a
+  minute, and only when that needs no merge.
+- **Serve an up-to-date index**: `WIKI-INDEX.md` is rewritten by each write, and
+  a read of it always lists the pages as they are now, including those added or
+  moved in Obsidian since.
 
 There is no delete tool. `.git`, `.obsidian` and hidden files are out of reach,
 as is anything outside the vault.

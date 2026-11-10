@@ -4,9 +4,10 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::Path;
 use std::process::Command;
 use std::thread;
+use std::time::Duration;
 
 use tempfile::{tempdir, TempDir};
-use wiki_llm_mcp::apply::{apply_changes, Change, MAX_CHANGES};
+use wiki_llm_mcp::apply::{apply_changes, sync_for_read, Change, MAX_CHANGES};
 use wiki_llm_mcp::init::{init, INDEX_FILE, RULES_FILE};
 use wiki_llm_mcp::vault::{revision, Vault, MAX_PAGE_BYTES};
 
@@ -471,6 +472,9 @@ fn moving_keeps_content_history_and_links_in_one_commit() {
     );
     assert_eq!(read(dir.path(), "raw/src.md"), "[[Note]]");
     assert_eq!(report.links_updated, 1);
+    // A source is never rewritten: its link to the moved page is reported.
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(report.warnings[0].starts_with("raw/src.md links to old/Note.md"));
     assert_eq!(git(dir.path(), &["status", "--porcelain"]), "");
     let index = read(dir.path(), INDEX_FILE);
     assert!(
@@ -683,4 +687,75 @@ fn an_unreachable_remote_only_delays_the_push() {
     let bare = dir.path().join("remote.git");
     let tree = git(&bare, &["ls-tree", "--name-only", "main"]);
     assert!(tree.contains("a.md") && tree.contains("b.md"), "{tree}");
+}
+
+#[test]
+fn a_source_whose_link_still_resolves_is_not_reported() {
+    let (_dir, vault) = vault_with(&[("old/Note.md", "x"), ("raw/src.md", "[[Note]]")]);
+    let report = apply_changes(&vault, &[mv("old/Note.md", "new/Note.md")], "r").unwrap();
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+}
+
+#[test]
+fn a_read_takes_in_what_another_device_pushed() {
+    let (_dir, vault, device) = with_remote(&[("a.md", "x")]);
+    commit_on_device(&device, "from-device.md", "device note");
+
+    assert!(sync_for_read(&vault, Duration::ZERO).unwrap());
+    assert_eq!(read(vault.root(), "from-device.md"), "device note");
+
+    // Within the trusted delay, the remote is not asked again.
+    commit_on_device(&device, "later.md", "later");
+    assert!(!sync_for_read(&vault, Duration::from_secs(3600)).unwrap());
+    assert!(!vault.root().join("later.md").exists());
+    assert!(sync_for_read(&vault, Duration::ZERO).unwrap());
+    assert_eq!(read(vault.root(), "later.md"), "later");
+}
+
+#[test]
+fn a_write_counts_as_a_synchronization() {
+    let (_dir, vault, device) = with_remote(&[]);
+    apply_changes(&vault, &[create("a.md", "x")], "r").unwrap();
+    git(&device, &["pull", "-q"]);
+    commit_on_device(&device, "b.md", "y");
+    assert!(!sync_for_read(&vault, Duration::from_secs(3600)).unwrap());
+}
+
+#[test]
+fn a_read_never_touches_work_that_is_not_pushed() {
+    // Uncommitted edit of a page that also changed on the remote.
+    let (_dir, vault, device) = with_remote(&[("a.md", "x")]);
+    commit_on_device(&device, "a.md", "device version");
+    write(vault.root(), "a.md", "local version");
+    assert!(!sync_for_read(&vault, Duration::ZERO).unwrap());
+    assert_eq!(read(vault.root(), "a.md"), "local version");
+    assert!(!vault.root().join(".git/MERGE_HEAD").exists());
+
+    // Local commits the remote does not have: the histories diverged.
+    let (_dir, vault, device) = with_remote(&[("a.md", "x")]);
+    let bare = vault.root().parent().unwrap().join("remote.git");
+    let gone = vault.root().parent().unwrap().join("gone.git");
+    fs::rename(&bare, &gone).unwrap();
+    apply_changes(&vault, &[create("local.md", "l")], "offline").unwrap();
+    fs::rename(&gone, &bare).unwrap();
+    commit_on_device(&device, "b.md", "y");
+    let head = git(vault.root(), &["rev-parse", "HEAD"]);
+    assert!(!sync_for_read(&vault, Duration::ZERO).unwrap());
+    assert_eq!(git(vault.root(), &["rev-parse", "HEAD"]), head);
+    assert_eq!(read(vault.root(), "local.md"), "l");
+}
+
+#[test]
+fn a_read_works_offline_and_without_a_remote() {
+    let (dir, vault, _device) = with_remote(&[("a.md", "x")]);
+    fs::rename(dir.path().join("remote.git"), dir.path().join("gone.git")).unwrap();
+    assert!(!sync_for_read(&vault, Duration::ZERO).unwrap());
+
+    let (_dir, vault) = vault_with(&[("a.md", "x")]);
+    assert!(!sync_for_read(&vault, Duration::ZERO).unwrap());
+
+    let plain = tempdir().unwrap();
+    write(plain.path(), "a.md", "x");
+    let vault = Vault::open(plain.path()).unwrap();
+    assert!(!sync_for_read(&vault, Duration::ZERO).unwrap());
 }
