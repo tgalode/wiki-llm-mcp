@@ -69,14 +69,16 @@ flowchart TD
 
 Il faut `git` sur la machine qui sert le coffre. Ensuite, au choix :
 
-**L'extension Claude Desktop**, sur macOS : téléchargez
+**L'extension Claude Desktop**, sur macOS et Windows : téléchargez
 [`wiki-llm-mcp.mcpb`](https://github.com/tgalode/wiki-llm-mcp/releases/latest/download/wiki-llm-mcp.mcpb),
 ouvrez-le avec Claude Desktop (ou déposez-le dans Réglages > Extensions), puis
 choisissez votre dossier de notes. Rien d'autre à installer ni à configurer : le
 dossier est préparé au premier démarrage.
 
-**Un binaire précompilé**, pour Linux x86_64 (statique, toutes distributions) ou
-macOS sur puce Apple :
+**Un binaire précompilé**, pour Linux x86_64 (statique, toutes distributions),
+macOS sur puce Apple, ou Windows x86_64
+([`wiki-llm-mcp-x86_64-pc-windows-msvc.zip`](https://github.com/tgalode/wiki-llm-mcp/releases/latest/download/wiki-llm-mcp-x86_64-pc-windows-msvc.zip),
+avec [Git pour Windows](https://git-scm.com/download/win) installé) :
 
 ```sh
 target=x86_64-unknown-linux-musl   # macOS : aarch64-apple-darwin
@@ -272,7 +274,8 @@ sequenceDiagram
 
 - Le secret généré est stocké dans `.git/wiki-llm-mcp/secret`, lisible par son
   seul propriétaire et hors des fichiers du coffre. Un secret fourni par
-  `WIKI_LLM_MCP_SECRET` doit faire au moins 20 caractères.
+  `WIKI_LLM_MCP_SECRET` doit faire au moins 20 caractères. Sous Windows, ce
+  fichier et les jetons ne sont protégés que par les permissions du dossier.
 - Seules l'adresse de retour de Claude et les adresses locales peuvent recevoir
   une autorisation. `--allow-redirect-uri` permet d'autoriser un autre client.
 - Les jetons sont stockés hachés dans `.git/wiki-llm-mcp/`, jamais dans les

@@ -39,11 +39,19 @@ jobs:
             target: x86_64-unknown-linux-musl
           - os: macos-latest
             target: aarch64-apple-darwin
+          # The C runtime is linked in: nothing to install beside the .exe.
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rustflags: -C target-feature=+crt-static
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
+    defaults:
+      run:
+        shell: bash
     env:
       TARGET: ${{ matrix.target }}
+      RUSTFLAGS: ${{ matrix.rustflags }}
     steps:
       - uses: actions/checkout@v7
       - name: Install the Rust toolchain
@@ -59,14 +67,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # No version in the name: releases/latest/download/<name> stays valid.
-          archive="wiki-llm-mcp-$TARGET.tar.gz"
-          tar -czf "$archive" -C "target/$TARGET/release" wiki-llm-mcp
+          if [ "$RUNNER_OS" = Windows ]; then
+            archive="wiki-llm-mcp-$TARGET.zip"
+            7z a "$archive" "./target/$TARGET/release/wiki-llm-mcp.exe"
+          else
+            archive="wiki-llm-mcp-$TARGET.tar.gz"
+            tar -czf "$archive" -C "target/$TARGET/release" wiki-llm-mcp
+          fi
           gh release upload "$TAG" "$archive"
 
-  # One-click extension for Claude Desktop: a universal macOS binary and the
-  # manifest, in a .mcpb archive.
+  # One-click extension for Claude Desktop: a universal macOS binary, the
+  # Windows binary built above and the manifest, in a .mcpb archive.
   bundle:
-    needs: release
+    needs: [release, binaries]
     runs-on: macos-latest
     permissions:
       contents: write
@@ -91,6 +104,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          gh release download "$TAG" --pattern 'wiki-llm-mcp-x86_64-pc-windows-msvc.zip'
+          unzip -j wiki-llm-mcp-x86_64-pc-windows-msvc.zip -d bundle/server
+          test -f bundle/server/wiki-llm-mcp.exe
           jq --arg version "${TAG#v}" '.version = $version' mcpb/manifest.json > bundle/manifest.json
           npx -y @anthropic-ai/mcpb@2.1.2 pack bundle wiki-llm-mcp.mcpb
           gh release upload "$TAG" wiki-llm-mcp.mcpb

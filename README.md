@@ -66,14 +66,16 @@ flowchart TD
 
 You need `git` on the machine that serves the vault. Then pick one of:
 
-**The Claude Desktop extension**, on macOS: download
+**The Claude Desktop extension**, on macOS and Windows: download
 [`wiki-llm-mcp.mcpb`](https://github.com/tgalode/wiki-llm-mcp/releases/latest/download/wiki-llm-mcp.mcpb),
 open it with Claude Desktop (or drop it in Settings > Extensions), and choose
 your folder of notes. Nothing else to install or configure: the folder is
 prepared on the first start.
 
-**A prebuilt binary**, for Linux x86_64 (static, any distribution) or macOS on
-Apple silicon:
+**A prebuilt binary**, for Linux x86_64 (static, any distribution), macOS on
+Apple silicon, or Windows x86_64
+([`wiki-llm-mcp-x86_64-pc-windows-msvc.zip`](https://github.com/tgalode/wiki-llm-mcp/releases/latest/download/wiki-llm-mcp-x86_64-pc-windows-msvc.zip),
+with [Git for Windows](https://git-scm.com/download/win) installed):
 
 ```sh
 target=x86_64-unknown-linux-musl   # macOS: aarch64-apple-darwin
@@ -257,7 +259,8 @@ sequenceDiagram
 
 - The generated secret is stored in `.git/wiki-llm-mcp/secret`, readable by its
   owner only and outside the vault's files. A secret set through
-  `WIKI_LLM_MCP_SECRET` must be at least 20 characters long.
+  `WIKI_LLM_MCP_SECRET` must be at least 20 characters long. On Windows, this
+  file and the tokens are protected by the permissions of the folder only.
 - Only Claude's callback and local addresses can receive an authorization. Use
   `--allow-redirect-uri` to allow another client.
 - Tokens are stored hashed inside `.git/wiki-llm-mcp/`, never in the vault's files.

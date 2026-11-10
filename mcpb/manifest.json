@@ -4,7 +4,7 @@
   "display_name": "Wiki (Markdown / Obsidian vault)",
   "version": "0.0.0",
   "description": "Lets Claude read, search and maintain a folder of Markdown notes. Every change is a Git commit, and notes cannot be deleted.",
-  "long_description": "Point it at an Obsidian vault or any folder of Markdown notes. Claude can read and search the pages, create new ones, edit them and move them while keeping links valid. Every change is a Git commit of its own, your uncommitted edits are saved first, and there is no delete tool.\n\nThe folder is prepared on the first start: it becomes a Git repository and gains `raw/`, `wiki/`, `WIKI.md` (the rules Claude follows, which you can edit) and a generated `WIKI-INDEX.md`. Existing notes stay where they are.\n\nRequires `git` on this computer.",
+  "long_description": "Point it at an Obsidian vault or any folder of Markdown notes. Claude can read and search the pages, create new ones, edit them and move them while keeping links valid. Every change is a Git commit of its own, your uncommitted edits are saved first, and there is no delete tool.\n\nThe folder is prepared on the first start: it becomes a Git repository and gains `raw/`, `wiki/`, `WIKI.md` (the rules Claude follows, which you can edit) and a generated `WIKI-INDEX.md`. Existing notes stay where they are.\n\nRequires Git on this computer (on Windows: Git for Windows).",
   "author": {
     "name": "Théo Galodé",
     "url": "https://github.com/tgalode"
@@ -21,8 +21,17 @@
     "entry_point": "server/wiki-llm-mcp",
     "mcp_config": {
       "command": "${__dirname}/server/wiki-llm-mcp",
-      "args": ["serve", "--init", "${user_config.vault}"],
-      "env": {}
+      "args": [
+        "serve",
+        "--init",
+        "${user_config.vault}"
+      ],
+      "env": {},
+      "platform_overrides": {
+        "win32": {
+          "command": "${__dirname}/server/wiki-llm-mcp.exe"
+        }
+      }
     }
   },
   "user_config": {
@@ -34,17 +43,36 @@
     }
   },
   "tools": [
-    { "name": "list_pages", "description": "List the Markdown pages of the vault" },
-    { "name": "read_page", "description": "Read one page and its revision" },
-    { "name": "search", "description": "Search the vault by keywords" },
+    {
+      "name": "list_pages",
+      "description": "List the Markdown pages of the vault"
+    },
+    {
+      "name": "read_page",
+      "description": "Read one page and its revision"
+    },
+    {
+      "name": "search",
+      "description": "Search the vault by keywords"
+    },
     {
       "name": "apply_changes",
       "description": "Create, edit, append to, update or move pages, in one Git commit"
     }
   ],
-  "keywords": ["wiki", "obsidian", "markdown", "notes", "git", "knowledge base"],
+  "keywords": [
+    "wiki",
+    "obsidian",
+    "markdown",
+    "notes",
+    "git",
+    "knowledge base"
+  ],
   "license": "MIT",
   "compatibility": {
-    "platforms": ["darwin"]
+    "platforms": [
+      "darwin",
+      "win32"
+    ]
   }
 }
