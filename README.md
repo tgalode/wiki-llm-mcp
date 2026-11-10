@@ -6,6 +6,18 @@ through it.
 
 > Early development: not yet tested against every Claude client.
 
+## Contents
+
+- [What it does](#what-it-does)
+  - [How a change is written](#how-a-change-is-written)
+- [Install](#install)
+  - [Set up with an AI agent](#set-up-with-an-ai-agent)
+- [Usage](#usage)
+- [Remote mode (Claude mobile and web)](#remote-mode-claude-mobile-and-web)
+  - [Rotating the secret](#rotating-the-secret)
+- [Development](#development)
+- [License](#license)
+
 ## What it does
 
 - **Read and search** the Markdown pages of a vault.
@@ -204,6 +216,20 @@ docker run --rm -u "$(id -u):$(id -g)" --read-only --cap-drop ALL \
   -v "$PWD/vault:/vault" -e WIKI_LLM_MCP_SECRET -p 127.0.0.1:8787:8787 \
   wiki-llm-mcp serve /vault --public-url https://wiki.example.com --bind 0.0.0.0:8787
 ```
+
+### Rotating the secret
+
+The secret is only the password asked on the authorization page. Tokens are
+random and do not depend on it, so there are two separate actions:
+
+1. **Change the secret**: set a new value in `WIKI_LLM_MCP_SECRET` and restart
+   the server. Clients already connected keep working; the new secret is asked
+   the next time a client connects.
+2. **Revoke the sessions**: `wiki-llm-mcp revoke ./vault`. Every client must
+   then connect again, with the current secret.
+
+For a routine rotation, the first is enough. If the secret may have leaked, do
+both, in that order: someone could have obtained tokens with the old one.
 
 ## Development
 
