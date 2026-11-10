@@ -18,6 +18,29 @@ through it.
 There is no delete tool. `.git`, `.obsidian` and hidden files are out of reach,
 as is anything outside the vault.
 
+### How a change is written
+
+Every write goes through the same steps, one writer at a time. If any step
+before the commit fails, the files are put back as they were.
+
+```mermaid
+flowchart TD
+    A["Claude calls apply_changes<br/>(changes + reason)"] --> B["Take the write lock"]
+    B --> C["Commit the owner's uncommitted edits<br/>in a commit of their own"]
+    C --> D{"Vault has a<br/>Git remote?"}
+    D -- yes --> E["Fetch and rebase"]
+    D -- no --> F
+    E -- "conflict" --> X["Stop: nothing is written"]
+    E -- "up to date, or remote unreachable (warning)" --> F["Check every change<br/>against the vault"]
+    F -- "invalid" --> X
+    F -- "valid" --> G["Write the pages, fix the links<br/>that point to moved pages,<br/>regenerate WIKI-INDEX.md"]
+    G --> H["One commit, authored by the tool"]
+    H --> I{"Remote?"}
+    I -- yes --> J["Push<br/>(if it fails: kept locally,<br/>sent with the next write)"]
+    I -- no --> K["Done"]
+    J --> K
+```
+
 ## Install
 
 You need `git` on the machine that serves the vault, and either a Rust
@@ -94,6 +117,18 @@ up Git. Existing notes stay where they are; their original state is committed fi
 `WIKI.md` holds the rules given to the LLM when it connects. Edit it to change
 how your wiki is maintained. The LLM cannot modify it.
 
+In this mode everything runs on your machine: the client starts the server
+itself and talks to it over stdio. No port is opened and no secret is needed.
+
+```mermaid
+flowchart LR
+    subgraph machine["Your machine"]
+        client["Claude Desktop<br/>or Claude Code"] -- "stdio" --> server["wiki-llm-mcp serve"]
+        server -- "files + git" --> vault[("Vault<br/>(Git repository)")]
+    end
+    vault -. "pull / push (optional)" .-> remote[("Git remote")]
+```
+
 For Claude Desktop, in `claude_desktop_config.json`:
 
 ```json
@@ -113,6 +148,17 @@ Claude's apps reach connectors from Anthropic's servers, so the vault must be
 served at a public HTTPS address. You provide that address with a reverse proxy
 or a tunnel; TLS is not handled here.
 
+```mermaid
+flowchart LR
+    app["Claude mobile,<br/>web or desktop"] --> anthropic["Anthropic's servers"]
+    anthropic -- "HTTPS /mcp<br/>+ access token" --> proxy["Your reverse proxy<br/>or tunnel (TLS)"]
+    subgraph host["Your server"]
+        proxy -- "HTTP 127.0.0.1:8787" --> server["wiki-llm-mcp serve<br/>--public-url ..."]
+        server -- "files + git" --> vault[("Vault<br/>(Git repository)")]
+    end
+    vault -. "pull / push (optional)" .-> remote[("Git remote")]
+```
+
 ```sh
 export WIKI_LLM_MCP_SECRET="$(openssl rand -base64 32)"   # keep it somewhere safe
 wiki-llm-mcp serve ./vault --public-url https://wiki.example.com
@@ -122,6 +168,23 @@ The server listens on `127.0.0.1:8787` (`--bind` to change it). In Claude, add a
 custom connector with the URL `https://wiki.example.com/mcp`, choose
 **Register automatically** for the OAuth client, and enter the secret on the
 page that opens.
+
+The secret is typed once, in your browser, and never reaches Claude:
+
+```mermaid
+sequenceDiagram
+    actor You
+    participant Claude
+    participant Server as wiki-llm-mcp
+    You->>Claude: Add connector https://wiki.example.com/mcp
+    Claude->>Server: Discover the OAuth endpoints, register a client
+    Claude-->>You: Open the authorization page
+    You->>Server: Enter the secret
+    Server-->>Claude: Authorization code (PKCE)
+    Claude->>Server: Exchange the code
+    Server-->>Claude: Access token + refresh token
+    Claude->>Server: /mcp requests with the access token
+```
 
 - Without a secret of at least 20 characters, remote mode refuses to start.
 - Only Claude's callback and local addresses can receive an authorization. Use
