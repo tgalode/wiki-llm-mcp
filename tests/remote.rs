@@ -1,6 +1,7 @@
 //! The whole OAuth flow and authenticated MCP calls, through the real router.
 
 use std::fs;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
@@ -15,7 +16,8 @@ use tempfile::{tempdir, TempDir};
 use tower::ServiceExt;
 use wiki_llm_mcp::init::init;
 use wiki_llm_mcp::oauth::{normalize_public_url, Lifetimes, OAuthConfig};
-use wiki_llm_mcp::remote::{build_app, revoke_all, state_dir};
+use wiki_llm_mcp::remote::{build_app, build_app_with, revoke_all, state_dir, Allowed};
+use wiki_llm_mcp::upload::Uploads;
 use wiki_llm_mcp::vault::{canonical, Vault};
 
 const BASE: &str = "https://wiki.example.com";
@@ -41,12 +43,46 @@ fn harness_with(lifetimes: Lifetimes) -> Harness {
         extra_redirects: vec![],
         lifetimes,
     };
-    let app = build_app(vault, config).unwrap();
+    let app = build_app(vault, config, Allowed::default()).unwrap();
     Harness { dir, app }
 }
 
 fn harness() -> Harness {
     harness_with(Lifetimes::default())
+}
+
+/// A server whose owner allowed deleting and uploading; `link_lifetime`
+/// overrides how long upload links live.
+fn harness_allowing(link_lifetime: Option<Duration>) -> Harness {
+    let dir = tempdir().unwrap();
+    init(dir.path()).unwrap();
+    fs::write(dir.path().join("wiki/page.md"), "# Page\nremote content").unwrap();
+    let vault = Vault::open(dir.path()).unwrap();
+    let config = OAuthConfig {
+        public_url: BASE.to_string(),
+        secret: SECRET.to_string(),
+        state_dir: state_dir(&vault).unwrap(),
+        extra_redirects: vec![],
+        lifetimes: Lifetimes::default(),
+    };
+    let app = match link_lifetime {
+        Some(lifetime) => {
+            let uploads = Uploads::with_lifetime(vault.clone(), BASE, lifetime);
+            build_app_with(vault, config, true, Some(uploads))
+        }
+        None => build_app(
+            vault,
+            config,
+            Allowed {
+                delete: true,
+                upload: true,
+            },
+        ),
+    };
+    Harness {
+        dir,
+        app: app.unwrap(),
+    }
 }
 
 fn challenge() -> String {
@@ -183,6 +219,43 @@ impl Harness {
     }
 }
 
+impl Harness {
+    async fn access(&self) -> String {
+        let client = self.client().await;
+        self.tokens(&client).await["access_token"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// Calls a tool and returns the `result` of the answer.
+    async fn call(&self, access: &str, name: &str, arguments: Value) -> Value {
+        let message = json!({"jsonrpc":"2.0","id":7,"method":"tools/call",
+            "params":{"name":name,"arguments":arguments}});
+        let response = self.mcp(Some(access), message).await;
+        let answer: Value = serde_json::from_str(&body_text(response).await).unwrap();
+        answer["result"].clone()
+    }
+
+    /// Asks for an upload link and returns its path on the server.
+    async fn upload_path(&self, access: &str, arguments: Value) -> String {
+        let result = self.call(access, "upload_link", arguments).await;
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let link: Value = serde_json::from_str(text).unwrap();
+        let url = link["url"].as_str().unwrap();
+        assert!(url.starts_with(&format!("{BASE}/upload/")), "{url}");
+        url[BASE.len()..].to_string()
+    }
+
+    async fn put(&self, path: &str, body: &[u8]) -> Response {
+        let request = Request::put(path)
+            .header(header::HOST, HOST)
+            .body(Body::from(body.to_vec()))
+            .unwrap();
+        self.send(request).await
+    }
+}
+
 fn tools_list() -> Value {
     json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})
 }
@@ -233,10 +306,17 @@ async fn full_flow_gives_access_to_the_vault_tools() {
     let response = h.mcp(Some(access), tools_list()).await;
     assert_eq!(response.status(), StatusCode::OK);
     let text = body_text(response).await;
+    // Deleting and uploading are offered only when the owner allowed them.
     assert!(
-        text.contains("apply_changes") && !text.contains("delete_"),
+        text.contains("apply_changes")
+            && !text.contains("\"delete\"")
+            && !text.contains("upload_link"),
         "{text}"
     );
+    let response = h.get("/upload/anything").await;
+    assert_ne!(response.status(), StatusCode::OK);
+    let response = h.put("/upload/anything/x.pdf", b"x").await;
+    assert_ne!(response.status(), StatusCode::CREATED);
 
     let read = json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
         "params":{"name":"read_page","arguments":{"path":"wiki/page.md"}}});
@@ -597,14 +677,14 @@ fn startup_refuses_weak_or_unsafe_settings() {
         extra_redirects: vec![],
         lifetimes: Lifetimes::default(),
     };
-    assert!(build_app(vault.clone(), config(BASE, "too short")).is_err());
+    assert!(build_app(vault.clone(), config(BASE, "too short"), Allowed::default()).is_err());
     for url in [
         "http://wiki.example.com",
         "https://x.example/path",
         "nonsense",
     ] {
         assert!(
-            build_app(vault.clone(), config(url, SECRET)).is_err(),
+            build_app(vault.clone(), config(url, SECRET), Allowed::default()).is_err(),
             "{url}"
         );
     }
@@ -613,4 +693,139 @@ fn startup_refuses_weak_or_unsafe_settings() {
         normalize_public_url("https://a.example/").unwrap(),
         "https://a.example"
     );
+}
+
+#[tokio::test]
+async fn an_allowed_delete_tool_deletes_through_mcp() {
+    let h = harness_allowing(None);
+    let access = h.access().await;
+    let response = h.mcp(Some(&access), tools_list()).await;
+    let text = body_text(response).await;
+    assert!(
+        text.contains("\"delete\"") && text.contains("upload_link"),
+        "{text}"
+    );
+
+    let result = h
+        .call(
+            &access,
+            "delete",
+            json!({"reason":"asked by the owner","paths":["wiki/page.md"]}),
+        )
+        .await;
+    assert_ne!(result["isError"], true, "{result}");
+    assert!(!h.dir.path().join("wiki/page.md").exists());
+}
+
+#[tokio::test]
+async fn an_upload_link_lets_the_owner_add_files_without_a_token() {
+    let h = harness_allowing(None);
+    let access = h.access().await;
+    let path = h.upload_path(&access, json!({})).await;
+
+    let response = h.get(&path).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let policy = response.headers()[header::CONTENT_SECURITY_POLICY]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(policy.contains("script-src 'nonce-"), "{policy}");
+    let page = body_text(response).await;
+    assert!(page.contains("<code>raw/</code>"), "{page}");
+
+    let bytes = [0u8, 159, 146, 150, 255];
+    let response = h
+        .put(&format!("{path}/Relev%C3%A9%20de%20compte.pdf"), &bytes)
+        .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let report: Value = serde_json::from_str(&body_text(response).await).unwrap();
+    assert_eq!(report["pages_changed"][0], "raw/Relevé de compte.pdf");
+    assert_eq!(
+        fs::read(h.dir.path().join("raw/Relevé de compte.pdf")).unwrap(),
+        bytes
+    );
+
+    // Never replaced, and the first content stays.
+    let again = h
+        .put(&format!("{path}/Relev%C3%A9%20de%20compte.pdf"), b"other")
+        .await;
+    assert_eq!(again.status(), StatusCode::BAD_REQUEST);
+    assert!(body_text(again).await.contains("already exists"));
+    assert_eq!(
+        fs::read(h.dir.path().join("raw/Relevé de compte.pdf")).unwrap(),
+        bytes
+    );
+
+    let listed = h
+        .call(&access, "list_files", json!({"prefix":"raw/"}))
+        .await;
+    let text = listed["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("Relevé de compte.pdf"), "{text}");
+}
+
+#[tokio::test]
+async fn an_upload_link_is_bound_to_its_folder() {
+    let h = harness_allowing(None);
+    let access = h.access().await;
+    let path = h
+        .upload_path(&access, json!({"folder":"raw/invoices/"}))
+        .await;
+
+    let response = h.put(&format!("{path}/a.pdf"), b"a").await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert!(h.dir.path().join("raw/invoices/a.pdf").exists());
+
+    for name in [
+        "..%2Fescaped.pdf",
+        "sub%2Fdeeper.pdf",
+        "..",
+        ".hidden.pdf",
+        "back%5Cslash.pdf",
+        "new%0Aline.pdf",
+        "%20",
+    ] {
+        let response = h.put(&format!("{path}/{name}"), b"x").await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{name}");
+    }
+    assert!(!h.dir.path().join("raw/escaped.pdf").exists());
+    assert!(!h.dir.path().join("raw/invoices/sub").exists());
+
+    for folder in ["../outside", ".git", ".obsidian/plugins", "/etc", ""] {
+        let result = h
+            .call(&access, "upload_link", json!({"folder":folder}))
+            .await;
+        assert_eq!(result["isError"], true, "{folder}: {result}");
+    }
+}
+
+#[tokio::test]
+async fn an_unknown_or_expired_upload_link_is_refused() {
+    let h = harness_allowing(None);
+    assert_eq!(
+        h.get("/upload/not-a-link").await.status(),
+        StatusCode::NOT_FOUND
+    );
+    let response = h.put("/upload/not-a-link/a.pdf", b"a").await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(!h.dir.path().join("raw/a.pdf").exists());
+
+    let h = harness_allowing(Some(Duration::ZERO));
+    let access = h.access().await;
+    let path = h.upload_path(&access, json!({})).await;
+    assert_eq!(h.get(&path).await.status(), StatusCode::NOT_FOUND);
+    let response = h.put(&format!("{path}/a.pdf"), b"a").await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(!h.dir.path().join("raw/a.pdf").exists());
+}
+
+#[tokio::test]
+async fn an_upload_larger_than_the_limit_is_refused() {
+    let h = harness_allowing(None);
+    let access = h.access().await;
+    let path = h.upload_path(&access, json!({})).await;
+    let too_large = vec![0u8; wiki_llm_mcp::vault::MAX_FILE_BYTES as usize + 1];
+    let response = h.put(&format!("{path}/huge.bin"), &too_large).await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(!h.dir.path().join("raw/huge.bin").exists());
 }

@@ -11,7 +11,7 @@ use wiki_llm_mcp::{
         SECRET_ENV,
     },
     remote,
-    server::WikiServer,
+    server::{Options, WikiServer},
     vault::Vault,
 };
 
@@ -44,6 +44,14 @@ enum Commands {
         /// OAuth redirect URI to accept in addition to Claude's (repeatable).
         #[arg(long = "allow-redirect-uri")]
         allow_redirect_uri: Vec<String>,
+        /// Offer a tool that deletes pages and files. Git keeps what they
+        /// contained. Without this flag, nothing can be deleted.
+        #[arg(long)]
+        allow_delete: bool,
+        /// Offer a tool that gives the owner a short-lived link to send files
+        /// (PDF, images) from a browser. Remote mode only.
+        #[arg(long, requires = "public_url")]
+        allow_upload: bool,
     },
     /// Disconnect every remote client of a vault.
     Revoke { path: PathBuf },
@@ -92,10 +100,15 @@ async fn main() -> Result<()> {
             path,
             init,
             public_url: None,
+            allow_delete,
             ..
         } => {
             // stdout carries the MCP protocol: anything human goes to stderr.
-            let server = WikiServer::new(open_vault(&path, init)?);
+            let options = Options {
+                allow_delete,
+                uploads: None,
+            };
+            let server = WikiServer::with_options(open_vault(&path, init)?, options);
             eprintln!("wiki-llm-mcp: serving {} over stdio", path.display());
             server.serve(stdio()).await?.waiting().await?;
         }
@@ -105,6 +118,8 @@ async fn main() -> Result<()> {
             public_url: Some(public_url),
             bind,
             allow_redirect_uri,
+            allow_delete,
+            allow_upload,
         } => {
             let public_url = normalize_public_url(&public_url)?;
             let vault = open_vault(&path, init)?;
@@ -133,7 +148,11 @@ async fn main() -> Result<()> {
                 extra_redirects: allow_redirect_uri,
                 lifetimes: Lifetimes::default(),
             };
-            remote::serve(vault, config, bind).await?;
+            let allowed = remote::Allowed {
+                delete: allow_delete,
+                upload: allow_upload,
+            };
+            remote::serve(vault, config, allowed, bind).await?;
         }
         Commands::Revoke { path } => {
             let count = remote::revoke_all(&Vault::open(&path)?)?;

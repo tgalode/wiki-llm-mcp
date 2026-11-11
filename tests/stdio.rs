@@ -59,11 +59,13 @@ fn serves_the_vault_over_the_mcp_protocol() {
     let tools = tools["result"]["tools"].as_array().unwrap();
     let mut names: Vec<_> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     names.sort();
-    // The absence of any delete tool is a product rule: this list is on purpose.
+    // Without --allow-delete there is no delete tool, and upload links only
+    // exist in remote mode: this list is on purpose.
     assert_eq!(
         names,
         [
             "apply_changes",
+            "list_files",
             "list_pages",
             "read_page",
             "recent_changes",
@@ -73,7 +75,7 @@ fn serves_the_vault_over_the_mcp_protocol() {
     let read_only = tools
         .iter()
         .filter(|t| t["annotations"]["readOnlyHint"] == true);
-    assert_eq!(read_only.count(), 4);
+    assert_eq!(read_only.count(), 5);
 
     let mut call = |id: u32, name: &str, arguments: Value| {
         send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
@@ -159,6 +161,11 @@ fn serves_the_vault_over_the_mcp_protocol() {
     assert!(
         no_delete.is_null() || no_delete["isError"] == true,
         "{no_delete}"
+    );
+    let no_delete_tool = call(14, "delete", json!({"reason":"x","paths":["wiki/new.md"]}));
+    assert!(
+        no_delete_tool.is_null() || no_delete_tool["isError"] == true,
+        "{no_delete_tool}"
     );
     assert!(vault.join("wiki/new.md").exists());
 

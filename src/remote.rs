@@ -8,7 +8,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use axum::extract::DefaultBodyLimit;
 use axum::middleware::from_fn_with_state;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::Router;
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
@@ -18,8 +18,9 @@ use crate::oauth::{
     authorization_server, authorize_page, authorize_submit, protected_resource, register,
     require_token, token, OAuth, OAuthConfig, TokenStore,
 };
-use crate::server::WikiServer;
-use crate::vault::{canonical, Vault};
+use crate::server::{Options, WikiServer};
+use crate::upload::{self, Uploads};
+use crate::vault::{canonical, Vault, MAX_FILE_BYTES};
 
 const MAX_MCP_BODY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OAUTH_BODY_BYTES: usize = 64 * 1024;
@@ -36,9 +37,34 @@ fn state_dir_of(root: &Path) -> Result<PathBuf> {
     Ok(canonical(&git_dir).unwrap_or(git_dir).join("wiki-llm-mcp"))
 }
 
-pub fn build_app(vault: Vault, config: OAuthConfig) -> Result<Router> {
+/// What the owner allowed on the command line. Nothing by default.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Allowed {
+    pub delete: bool,
+    pub upload: bool,
+}
+
+pub fn build_app(vault: Vault, config: OAuthConfig, allowed: Allowed) -> Result<Router> {
+    let uploads = allowed
+        .upload
+        .then(|| Uploads::new(vault.clone(), &config.public_url));
+    build_app_with(vault, config, allowed.delete, uploads)
+}
+
+pub fn build_app_with(
+    vault: Vault,
+    config: OAuthConfig,
+    allow_delete: bool,
+    uploads: Option<Uploads>,
+) -> Result<Router> {
     let oauth = OAuth::new(config)?;
-    let server = WikiServer::new(vault);
+    let server = WikiServer::with_options(
+        vault,
+        Options {
+            allow_delete,
+            uploads: uploads.clone(),
+        },
+    );
     let mcp = StreamableHttpService::new(
         move || Ok(server.clone()),
         Arc::new(NeverSessionManager::default()),
@@ -72,12 +98,29 @@ pub fn build_app(vault: Vault, config: OAuthConfig) -> Result<Router> {
         .route("/healthz", get(|| async { "ok" }))
         .layer(DefaultBodyLimit::max(MAX_OAUTH_BODY_BYTES))
         .with_state(oauth);
-    Ok(open.merge(protected))
+    let app = open.merge(protected);
+    // An upload link is its own credential: whoever holds it may add files
+    // for as long as it lives, without a token.
+    Ok(match uploads {
+        Some(uploads) => app.merge(
+            Router::new()
+                .route("/upload/{token}", get(upload::page))
+                .route("/upload/{token}/{name}", put(upload::receive))
+                .layer(DefaultBodyLimit::max(MAX_FILE_BYTES as usize))
+                .with_state(uploads),
+        ),
+        None => app,
+    })
 }
 
-pub async fn serve(vault: Vault, config: OAuthConfig, bind: SocketAddr) -> Result<()> {
+pub async fn serve(
+    vault: Vault,
+    config: OAuthConfig,
+    allowed: Allowed,
+    bind: SocketAddr,
+) -> Result<()> {
     let public_url = config.public_url.clone();
-    let app = build_app(vault, config)?;
+    let app = build_app(vault, config, allowed)?;
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .with_context(|| format!("could not listen on {bind}"))?;

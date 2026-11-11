@@ -3,8 +3,8 @@
 [English](README.md) · **Français**
 
 Un serveur MCP qui permet à Claude de lire, chercher et maintenir votre coffre
-(vault) Obsidian ou Markdown. Chaque changement est un commit Git, et il est
-impossible de supprimer une note par son intermédiaire.
+(vault) Obsidian ou Markdown. Chaque changement est un commit Git, et rien ne
+peut être supprimé par son intermédiaire sans votre accord.
 
 > En début de développement : pas encore testé avec tous les clients Claude.
 
@@ -15,6 +15,9 @@ impossible de supprimer une note par son intermédiaire.
 - [Installation](#installation)
   - [Configurer avec un agent IA](#configurer-avec-un-agent-ia)
 - [Utilisation](#utilisation)
+- [Fichiers et suppression](#fichiers-et-suppression)
+  - [Supprimer](#supprimer)
+  - [Ajouter des fichiers](#ajouter-des-fichiers)
 - [Mode distant (Claude mobile et web)](#mode-distant-claude-mobile-et-web)
   - [Avec Docker Compose](#avec-docker-compose)
   - [Sans Docker](#sans-docker)
@@ -47,8 +50,11 @@ impossible de supprimer une note par son intermédiaire.
   sa lecture liste toujours les pages telles qu'elles sont maintenant, y compris
   celles ajoutées ou déplacées dans Obsidian depuis.
 
-Il n'y a pas d'outil de suppression. `.git`, `.obsidian` et les fichiers cachés
-sont hors d'atteinte, comme tout ce qui se trouve en dehors du coffre.
+Par défaut, il n'y a ni outil de suppression ni moyen d'envoyer un fichier :
+vous autorisez l'un et l'autre au démarrage du serveur, voir
+[Fichiers et suppression](#fichiers-et-suppression). `.git`, `.obsidian` et les
+fichiers cachés sont hors d'atteinte, comme tout ce qui se trouve en dehors du
+coffre.
 
 ### Comment un changement est écrit
 
@@ -199,6 +205,61 @@ Pour Claude Desktop, dans `claude_desktop_config.json` :
   }
 }
 ```
+
+## Fichiers et suppression
+
+Les fichiers qui ne sont pas des pages Markdown (PDF, images, pièces jointes)
+peuvent toujours être listés, avec leur taille. Leur contenu n'est pas lisible
+par le serveur. La suppression et l'ajout de ces fichiers sont désactivés tant
+que vous ne les autorisez pas.
+
+### Supprimer
+
+```sh
+wiki-llm-mcp serve ./vault --allow-delete
+```
+
+Claude dispose alors d'un outil `delete`, distinct de celui qui modifie les
+pages : votre client peut ainsi demander votre accord pour les seules
+suppressions. Il supprime des pages et des fichiers, tous ou aucun, en un
+commit :
+
+- Git garde ce qui a été supprimé : `git revert <commit>` le fait revenir.
+- Les liens qui menaient à une page ou à un fichier supprimé ne sont pas
+  retirés. Ils sont signalés, pour que Claude les corrige ou vous demande.
+- `WIKI.md` et `WIKI-INDEX.md` ne peuvent pas être supprimés.
+
+Les règles par défaut de `WIKI.md` demandent à Claude de ne supprimer que si
+vous le lui demandez. Un coffre préparé avec une version antérieure contient
+« Never delete a note » : modifiez cette ligne, sinon Claude continuera de
+refuser.
+
+### Ajouter des fichiers
+
+Les octets d'un fichier ne peuvent pas passer par un appel MCP. En mode
+distant, le serveur peut à la place fournir des liens d'envoi :
+
+```sh
+wiki-llm-mcp serve ./vault --public-url https://wiki.example.com --allow-upload
+```
+
+Demandez à Claude un lien pour ajouter des fichiers. L'outil `upload_link`
+renvoie une adresse comme `https://wiki.example.com/upload/<jeton>` : ouvrez-la
+dans un navigateur, choisissez les fichiers, renommez-les au besoin, envoyez.
+Chaque fichier est commité et poussé, dans un commit qui n'est pas signé par le
+LLM.
+
+- Un lien fonctionne 30 minutes, pour un dossier (`raw/`, sauf si Claude en
+  demande un autre) et pour 50 fichiers. Redémarrer le serveur ferme tous les
+  liens.
+- Un fichier ne remplace jamais un fichier existant, et ne dépasse pas 25 Mo.
+- Le lien est le seul moyen d'authentification : quiconque le détient peut
+  ajouter des fichiers tant qu'il est valide, mais ne peut rien lire ni
+  modifier. Traitez-le comme un mot de passe.
+- Un script peut aussi envoyer un fichier :
+  `curl -T scan.pdf https://wiki.example.com/upload/<jeton>/scan.pdf`
+
+En stdio, le coffre est un dossier de votre machine : copiez-y les fichiers.
 
 ## Mode distant (Claude mobile et web)
 

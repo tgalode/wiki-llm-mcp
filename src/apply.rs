@@ -1,5 +1,6 @@
 //! The only way to change a vault. A call validates everything, then writes
-//! everything in one commit, or writes nothing. There is no delete operation.
+//! everything in one commit, or writes nothing. Deleting and adding files are
+//! separate entry points, which the owner has to allow when starting the server.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File};
@@ -12,12 +13,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::{commit_staged, git, git_network, git_ok, git_stdout, has_staged_changes};
 use crate::init::{refresh_index, INDEX_FILE, RULES_FILE};
-use crate::links::{rebase_own_links, rewrite_for_move};
-use crate::vault::{canonical, revision, Vault, MAX_PAGE_BYTES};
+use crate::links::{links_to, rebase_own_links, rewrite_for_move};
+use crate::vault::{canonical, is_page, revision, Vault, MAX_FILE_BYTES, MAX_PAGE_BYTES};
 
 pub const MAX_CHANGES: usize = 200;
 const MAX_REASON_CHARS: usize = 500;
 const MAX_PATHS_IN_MESSAGE: usize = 20;
+const MAX_LINKERS_IN_WARNING: usize = 10;
 const NETWORK_LIMIT: Duration = Duration::from_secs(60);
 /// How long a read trusts the last synchronization with the remote.
 pub const READ_SYNC_EVERY: Duration = Duration::from_secs(60);
@@ -62,6 +64,7 @@ pub struct ApplyReport {
     /// Short hash of the commit; absent when the changes altered nothing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// Pages and files written, moved or deleted.
     pub pages_changed: Vec<String>,
     /// New revision of each page written, for a later `update` without
     /// reading the page again.
@@ -102,6 +105,8 @@ struct Plan<'a> {
     vault: &'a Vault,
     pages: BTreeSet<String>,
     contents: HashMap<String, String>,
+    /// Files that are not pages, to be added as they are.
+    files: BTreeMap<String, Vec<u8>>,
     written: BTreeSet<String>,
     removed: BTreeSet<String>,
     links_updated: usize,
@@ -114,6 +119,7 @@ impl<'a> Plan<'a> {
             vault,
             pages: vault.all_pages().into_iter().collect(),
             contents: HashMap::new(),
+            files: BTreeMap::new(),
             written: BTreeSet::new(),
             removed: BTreeSet::new(),
             links_updated: 0,
@@ -142,9 +148,72 @@ impl<'a> Plan<'a> {
     fn ensure_free(&self, page: &str) -> Result<()> {
         let on_disk = fs::symlink_metadata(self.vault.root().join(page)).is_ok()
             && !self.removed.contains(page);
-        if on_disk || self.pages.iter().any(|p| p.eq_ignore_ascii_case(page)) {
+        let planned = self.pages.iter().chain(self.files.keys());
+        if on_disk || planned.into_iter().any(|p| p.eq_ignore_ascii_case(page)) {
             bail!("{page} already exists");
         }
+        Ok(())
+    }
+
+    /// Adds a file given as bytes. Like `create`, it never replaces anything.
+    fn add_file(&mut self, path: &str, bytes: Vec<u8>) -> Result<()> {
+        let path = Vault::normalize_any(path)?;
+        ensure_not_protected(&path)?;
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            bail!("{path}: file too large (limit: {MAX_FILE_BYTES} bytes)");
+        }
+        self.vault.check_writable(&path)?;
+        self.ensure_free(&path)?;
+        self.files.insert(path, bytes);
+        Ok(())
+    }
+
+    /// Deletes a page or a file. Links that pointed to it are left as they
+    /// are and reported: removing them is an editorial choice.
+    fn delete(&mut self, path: &str) -> Result<()> {
+        let target = Vault::normalize_any(path)?;
+        ensure_not_protected(&target)?;
+        self.vault.check_writable(&target)?;
+        let exists = if is_page(&target) {
+            self.pages.contains(&target)
+        } else {
+            !self.removed.contains(&target)
+                && fs::symlink_metadata(self.vault.root().join(&target))
+                    .is_ok_and(|meta| meta.is_file())
+        };
+        if !exists {
+            bail!("not found: {target}");
+        }
+
+        let pages = self.pages.clone();
+        let mut linkers = Vec::new();
+        for page in pages.iter().filter(|page| **page != target) {
+            if is_protected(page) {
+                continue;
+            }
+            let Ok(content) = self.read(page) else {
+                continue;
+            };
+            if links_to(&content, page, &target, &pages) {
+                linkers.push(page.as_str());
+            }
+        }
+        if !linkers.is_empty() {
+            let more = linkers.len().saturating_sub(MAX_LINKERS_IN_WARNING);
+            linkers.truncate(MAX_LINKERS_IN_WARNING);
+            let mut list = linkers.join(", ");
+            if more > 0 {
+                list.push_str(&format!(" and {more} more"));
+            }
+            self.warnings.push(format!(
+                "{target} was deleted but is still linked from: {list}"
+            ));
+        }
+
+        self.pages.remove(&target);
+        self.written.remove(&target);
+        self.contents.remove(&target);
+        self.removed.insert(target);
         Ok(())
     }
 
@@ -435,26 +504,41 @@ fn remember(previous: &mut Vec<(PathBuf, Option<Vec<u8>>)>, path: &Path) {
     previous.push((path.to_path_buf(), fs::read(path).ok()));
 }
 
-fn write_and_commit(vault: &Vault, plan: &Plan, reason: &str) -> Result<Option<String>> {
+fn write_and_commit(
+    vault: &Vault,
+    plan: &Plan,
+    reason: &str,
+    author: Option<&str>,
+) -> Result<Option<String>> {
     let root = vault.root();
     let mut previous = Vec::new();
 
     let staged: Result<Vec<String>> = (|| {
-        for page in &plan.written {
-            let path = root.join(page);
+        let pages = plan
+            .written
+            .iter()
+            .map(|page| (page, plan.contents[page].as_bytes()));
+        let files = plan.files.iter().map(|(file, bytes)| (file, &bytes[..]));
+        for (name, bytes) in pages.chain(files) {
+            let path = root.join(name);
             remember(&mut previous, &path);
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).context("could not create folder")?;
             }
-            fs::write(&path, &plan.contents[page])
-                .with_context(|| format!("could not write {page}"))?;
+            fs::write(&path, bytes).with_context(|| format!("could not write {name}"))?;
         }
         for page in &plan.removed {
             let path = root.join(page);
             remember(&mut previous, &path);
-            fs::remove_file(&path).with_context(|| format!("could not move {page}"))?;
+            fs::remove_file(&path).with_context(|| format!("could not remove {page}"))?;
         }
-        let mut paths: Vec<String> = plan.written.iter().chain(&plan.removed).cloned().collect();
+        let mut paths: Vec<String> = plan
+            .written
+            .iter()
+            .chain(plan.files.keys())
+            .chain(&plan.removed)
+            .cloned()
+            .collect();
         let index_path = root.join(INDEX_FILE);
         remember(&mut previous, &index_path);
         if refresh_index(vault)? {
@@ -470,7 +554,6 @@ fn write_and_commit(vault: &Vault, plan: &Plan, reason: &str) -> Result<Option<S
             if !has_staged_changes(root)? {
                 return Ok(None);
             }
-            let author = format!("--author={AUTHOR}");
             let mut body: Vec<&str> = paths
                 .iter()
                 .map(String::as_str)
@@ -482,7 +565,11 @@ fn write_and_commit(vault: &Vault, plan: &Plan, reason: &str) -> Result<Option<S
                 body.push(&more);
             }
             let body = body.join("\n");
-            git_ok(root, &["commit", "-q", &author, "-m", reason, "-m", &body])?;
+            let author = author.map(|author| format!("--author={author}"));
+            let mut commit = vec!["commit", "-q"];
+            commit.extend(author.as_deref());
+            commit.extend(["-m", reason, "-m", &body]);
+            git_ok(root, &commit)?;
             Ok(Some(git_stdout(root, &["rev-parse", "--short", "HEAD"])?))
         });
         if committed.is_err() {
@@ -507,6 +594,41 @@ pub fn apply_changes(vault: &Vault, changes: &[Change], reason: &str) -> Result<
     if changes.len() > MAX_CHANGES {
         bail!("too many changes in one call (limit: {MAX_CHANGES})");
     }
+    transact(vault, &reason, Some(AUTHOR), |plan| {
+        changes.iter().try_for_each(|change| plan.apply(change))
+    })
+}
+
+/// Deletes pages and files, all of them or none, in one commit. Git keeps what
+/// they contained. The server only offers this when the owner allowed it.
+pub fn delete_paths(vault: &Vault, paths: &[String], reason: &str) -> Result<ApplyReport> {
+    let reason = check_reason(reason)?;
+    if paths.is_empty() {
+        bail!("no paths given");
+    }
+    if paths.len() > MAX_CHANGES {
+        bail!("too many paths in one call (limit: {MAX_CHANGES})");
+    }
+    transact(vault, &reason, Some(AUTHOR), |plan| {
+        paths.iter().try_for_each(|path| plan.delete(path))
+    })
+}
+
+/// Adds one file sent by the owner through an upload link. The commit is not
+/// signed by the LLM: the file comes from the owner.
+pub fn add_file(vault: &Vault, path: &str, bytes: Vec<u8>) -> Result<ApplyReport> {
+    let reason = check_reason(&format!("Upload {path}"))?;
+    transact(vault, &reason, None, |plan| plan.add_file(path, bytes))
+}
+
+/// The steps every write goes through: lock, save the owner's work, take in
+/// the remote, validate the whole plan, then write, commit and push.
+fn transact(
+    vault: &Vault,
+    reason: &str,
+    author: Option<&str>,
+    build: impl FnOnce(&mut Plan) -> Result<()>,
+) -> Result<ApplyReport> {
     let root = vault.root();
     let git_dir = check_repository(root)?;
 
@@ -524,11 +646,9 @@ pub fn apply_changes(vault: &Vault, changes: &[Change], reason: &str) -> Result<
 
     // Validated against the synchronized vault, before anything is written.
     let mut plan = Plan::new(vault);
-    for change in changes {
-        plan.apply(change)?;
-    }
+    build(&mut plan)?;
 
-    let commit = write_and_commit(vault, &plan, &reason)?;
+    let commit = write_and_commit(vault, &plan, reason, author)?;
     // Also sends commits that an earlier offline call could not push.
     let pushed = upstream && push_remote(root, &mut warnings);
     warnings.extend(plan.warnings.iter().cloned());
@@ -539,6 +659,7 @@ pub fn apply_changes(vault: &Vault, changes: &[Change], reason: &str) -> Result<
         .map(|page| (page.clone(), revision(&plan.contents[page])))
         .collect();
     let mut pages_changed: Vec<String> = plan.written.iter().cloned().collect();
+    pages_changed.extend(plan.files.keys().cloned());
     pages_changed.extend(plan.removed.iter().cloned());
     Ok(ApplyReport {
         commit,

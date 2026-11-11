@@ -17,7 +17,7 @@ how it is maintained: its content is given to the LLM when it connects.
 - Connect pages with `[[wikilinks]]`.
 - When adding knowledge from a source, say where it comes from and link to it.
 - Flag contradictions instead of silently picking a side.
-- Never delete a note.
+- Delete a page or a file only when the owner asks for it explicitly.
 - Before reorganizing notes, present the plan to the owner and wait for approval.
 
 ## Content from sources

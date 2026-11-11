@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 pub const MAX_PAGE_BYTES: u64 = 2 * 1024 * 1024;
+/// Limit for a file that is not a page (PDF, image), which lives in Git too.
+pub const MAX_FILE_BYTES: u64 = 25 * 1024 * 1024;
 pub const MAX_PATH_CHARS: usize = 1024;
 pub const MAX_QUERY_CHARS: usize = 256;
 pub const MAX_LIST_LIMIT: usize = 200;
@@ -24,6 +26,21 @@ pub struct Vault {
 #[derive(Debug, Serialize, PartialEq)]
 pub struct PageList {
     pub pages: Vec<String>,
+    pub total: usize,
+    /// Pass as `offset` to get the next page of results; absent on the last one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+pub struct FileEntry {
+    pub path: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+pub struct FileList {
+    pub files: Vec<FileEntry>,
     pub total: usize,
     /// Pass as `offset` to get the next page of results; absent on the last one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,9 +103,19 @@ impl Vault {
         &self.root
     }
 
-    /// Checks the form of a client-supplied path, without touching the disk,
-    /// and returns it in canonical `a/b.md` form.
+    /// Checks the form of a client-supplied page path, without touching the
+    /// disk, and returns it in canonical `a/b.md` form.
     pub fn normalize(rel: &str) -> Result<String> {
+        let normalized = Self::normalize_any(rel)?;
+        if !is_page(&normalized) {
+            bail!("invalid path: only .md pages are accessible");
+        }
+        Ok(normalized)
+    }
+
+    /// Same checks for a path that may also be a folder or a file that is not
+    /// a page: visible, relative, inside the vault.
+    pub fn normalize_any(rel: &str) -> Result<String> {
         if rel.is_empty() || rel.chars().count() > MAX_PATH_CHARS {
             bail!("invalid path");
         }
@@ -111,8 +138,8 @@ impl Vault {
                 _ => bail!("invalid path: must be relative, inside the vault"),
             }
         }
-        if !has_md_extension(path) {
-            bail!("invalid path: only .md pages are accessible");
+        if parts.is_empty() {
+            bail!("invalid path");
         }
         Ok(parts.join("/"))
     }
@@ -164,23 +191,54 @@ impl Vault {
         fs::read_to_string(&real).map_err(|_| anyhow::anyhow!("page is not valid UTF-8: {rel}"))
     }
 
-    /// All Markdown pages, as sorted `/`-separated relative paths.
+    /// Visible regular files with their `/`-separated relative paths.
     /// Hidden entries are pruned and symlinks are not followed.
-    pub fn all_pages(&self) -> Vec<String> {
-        let mut pages: Vec<String> = WalkDir::new(&self.root)
+    fn visible_files(&self) -> impl Iterator<Item = (String, walkdir::DirEntry)> + '_ {
+        WalkDir::new(&self.root)
             .follow_links(false)
             .into_iter()
             .filter_entry(|e| e.depth() == 0 || !is_hidden(&e.file_name().to_string_lossy()))
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file() && has_md_extension(e.path()))
+            .filter(|e| e.file_type().is_file())
             .filter_map(|e| {
                 let rel = e.path().strip_prefix(&self.root).ok()?;
                 let parts: Vec<_> = rel.iter().map(|p| p.to_string_lossy()).collect();
-                Some(parts.join("/"))
+                Some((parts.join("/"), e))
             })
+    }
+
+    /// All Markdown pages, as sorted relative paths.
+    pub fn all_pages(&self) -> Vec<String> {
+        let mut pages: Vec<String> = self
+            .visible_files()
+            .map(|(path, _)| path)
+            .filter(|path| is_page(path))
             .collect();
         pages.sort();
         pages
+    }
+
+    /// The files that are not pages (PDF, images...), sorted by path.
+    pub fn list_files(&self, prefix: Option<&str>, offset: usize, limit: usize) -> FileList {
+        let limit = limit.clamp(1, MAX_LIST_LIMIT);
+        let mut matching: Vec<FileEntry> = self
+            .visible_files()
+            .filter(|(path, _)| !is_page(path))
+            .filter(|(path, _)| prefix.is_none_or(|prefix| path.starts_with(prefix)))
+            .map(|(path, entry)| FileEntry {
+                path,
+                bytes: entry.metadata().map_or(0, |meta| meta.len()),
+            })
+            .collect();
+        matching.sort_by(|a, b| a.path.cmp(&b.path));
+        let total = matching.len();
+        let files: Vec<FileEntry> = matching.into_iter().skip(offset).take(limit).collect();
+        let end = offset.saturating_add(files.len());
+        FileList {
+            next_offset: (end < total).then_some(end),
+            files,
+            total,
+        }
     }
 
     pub fn list_pages(&self, prefix: Option<&str>, offset: usize, limit: usize) -> PageList {
@@ -250,6 +308,11 @@ impl Vault {
         hits.truncate(limit.clamp(1, MAX_SEARCH_LIMIT));
         Ok(hits)
     }
+}
+
+/// Whether a relative path names a Markdown page rather than another file.
+pub fn is_page(path: &str) -> bool {
+    has_md_extension(Path::new(path))
 }
 
 fn has_md_extension(path: &Path) -> bool {

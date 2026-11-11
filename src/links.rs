@@ -1,6 +1,7 @@
 //! Keeps links valid when a page moves: `[[wikilinks]]` and `[text](path.md)`.
 //! Code blocks and inline code are left untouched.
 
+use std::cell::Cell;
 use std::collections::BTreeSet;
 
 fn strip_md(path: &str) -> &str {
@@ -151,24 +152,29 @@ fn base_is_unique(pages: &BTreeSet<String>, base: &str, except: Option<&str>) ->
         <= usize::from(except.is_none())
 }
 
+/// Whether the target of a wikilink leads to `path`. A bare name only
+/// designates it if no other page has the same name.
+fn wikilink_designates(target: &str, path: &str, pages: &BTreeSet<String>) -> bool {
+    let linked = strip_md(target);
+    let full = strip_md(path);
+    let base = basename(full);
+    linked.eq_ignore_ascii_case(full)
+        || (!linked.contains('/')
+            && linked.eq_ignore_ascii_case(base)
+            && base_is_unique(pages, base, None))
+}
+
 fn new_wikilink_target(
     target: &str,
     old: &str,
     new: &str,
     pages: &BTreeSet<String>,
 ) -> Option<String> {
-    let linked = strip_md(target);
-    let old_path = strip_md(old);
-    let old_base = basename(old_path);
-    let is_bare = !linked.contains('/');
-    // A bare name only designates this page if no other page has the same name.
-    let designates_page = linked.eq_ignore_ascii_case(old_path)
-        || (is_bare
-            && linked.eq_ignore_ascii_case(old_base)
-            && base_is_unique(pages, old_base, None));
-    if !designates_page {
+    if !wikilink_designates(target, old, pages) {
         return None;
     }
+    let linked = strip_md(target);
+    let is_bare = !linked.contains('/');
     let new_path = strip_md(new);
     let new_base = basename(new_path);
     if is_bare && base_is_unique(pages, new_base, Some(old)) {
@@ -206,6 +212,36 @@ pub fn rewrite_for_move(
     outside_code(content, |text| {
         map_markdown_links(&map_wikilinks(text, &wikilink), &markdown)
     })
+}
+
+/// Whether `content` (the text of `page`) links to `target`, a page or a file
+/// about to be deleted. Used to report the links a deletion leaves behind.
+pub fn links_to(content: &str, page: &str, target: &str, pages: &BTreeSet<String>) -> bool {
+    let dir = dirname(page);
+    let found = Cell::new(false);
+    let wikilink = |link: &str| {
+        if wikilink_designates(link, target, pages) {
+            found.set(true);
+        }
+        None
+    };
+    let markdown = |link: &str| {
+        let leads_there = match link.strip_prefix('/') {
+            Some(from_root) => from_root == target,
+            // Obsidian writes both page-relative and vault-root links.
+            None => [join(dir, link), join("", link)]
+                .iter()
+                .any(|resolved| resolved.as_deref() == Some(target)),
+        };
+        if leads_there {
+            found.set(true);
+        }
+        None
+    };
+    outside_code(content, |text| {
+        map_markdown_links(&map_wikilinks(text, &wikilink), &markdown)
+    });
+    found.get()
 }
 
 /// Page-relative links of a moved page point somewhere else from its new

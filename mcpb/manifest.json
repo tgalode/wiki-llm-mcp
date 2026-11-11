@@ -52,6 +52,10 @@
       "description": "Read one page and its revision"
     },
     {
+      "name": "list_files",
+      "description": "List the files that are not pages (PDF, images)"
+    },
+    {
       "name": "search",
       "description": "Search the vault by keywords"
     },

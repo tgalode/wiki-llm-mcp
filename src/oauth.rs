@@ -89,7 +89,7 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-fn random_token() -> Result<String> {
+pub(crate) fn random_token() -> Result<String> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("no system randomness: {e}"))?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
@@ -568,7 +568,7 @@ pub struct AuthorizeParams {
     secret: Option<String>,
 }
 
-fn escape(text: &str) -> String {
+pub(crate) fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

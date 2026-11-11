@@ -28,6 +28,9 @@ services:
       - ${PUBLIC_URL:?set PUBLIC_URL in .env, such as https://wiki.example.com}
       - --bind
       - 0.0.0.0:8787
+      # Off by default, see "Files and deletion" in the README:
+      # - --allow-upload
+      # - --allow-delete
     volumes:
       - ${VAULT:-./vault}:/vault
     ports:

@@ -3,8 +3,8 @@
 **English** · [Français](README.fr.md)
 
 An MCP server that lets Claude read, search and maintain your Obsidian or
-Markdown vault. Every change is a Git commit, and notes can never be deleted
-through it.
+Markdown vault. Every change is a Git commit, and nothing can be deleted
+through it unless you allow it.
 
 > Early development: not yet tested against every Claude client.
 
@@ -15,6 +15,9 @@ through it.
 - [Install](#install)
   - [Set up with an AI agent](#set-up-with-an-ai-agent)
 - [Usage](#usage)
+- [Files and deletion](#files-and-deletion)
+  - [Deleting](#deleting)
+  - [Adding files](#adding-files)
 - [Remote mode (Claude mobile and web)](#remote-mode-claude-mobile-and-web)
   - [With Docker Compose](#with-docker-compose)
   - [Without Docker](#without-docker)
@@ -45,8 +48,10 @@ through it.
   a read of it always lists the pages as they are now, including those added or
   moved in Obsidian since.
 
-There is no delete tool. `.git`, `.obsidian` and hidden files are out of reach,
-as is anything outside the vault.
+By default there is no delete tool and no way to send a file: you allow each
+of them when starting the server, see
+[Files and deletion](#files-and-deletion). `.git`, `.obsidian` and hidden files
+are out of reach, as is anything outside the vault.
 
 ### How a change is written
 
@@ -189,6 +194,55 @@ For Claude Desktop, in `claude_desktop_config.json`:
   }
 }
 ```
+
+## Files and deletion
+
+Files that are not Markdown pages (PDF, images, any attachment) can always be
+listed, with their size. Their content is not readable through the server.
+Deleting, and adding such files, are off until you turn them on.
+
+### Deleting
+
+```sh
+wiki-llm-mcp serve ./vault --allow-delete
+```
+
+Claude gets a `delete` tool, separate from the one that edits pages, so your
+client can ask for your approval on deletions only. It deletes pages and files,
+all of them or none, in one commit:
+
+- Git keeps what was deleted: `git revert <commit>` brings it back.
+- Links that pointed to a deleted page or file are not removed. They are
+  reported, so that Claude fixes them or asks you.
+- `WIKI.md` and `WIKI-INDEX.md` cannot be deleted.
+
+The default rules in `WIKI.md` tell Claude to delete only when you ask for it.
+A vault prepared with an earlier version says "Never delete a note": change
+that line, or Claude will keep refusing.
+
+### Adding files
+
+The bytes of a file cannot travel through an MCP call. In remote mode, the
+server can instead hand out upload links:
+
+```sh
+wiki-llm-mcp serve ./vault --public-url https://wiki.example.com --allow-upload
+```
+
+Ask Claude for a link to add files. The `upload_link` tool returns an address
+such as `https://wiki.example.com/upload/<token>`: open it in a browser, pick
+the files, rename them if needed, and send. Each file is committed and pushed,
+in a commit that is not signed by the LLM.
+
+- A link works for 30 minutes, for one folder (`raw/` unless Claude asks for
+  another one) and for 50 files. Restarting the server closes every link.
+- A file never replaces an existing one, and is limited to 25 MB.
+- The link is the only credential: anyone who has it can add files while it
+  lives, but cannot read or change anything. Treat it like a password.
+- A script can send a file too:
+  `curl -T scan.pdf https://wiki.example.com/upload/<token>/scan.pdf`
+
+Over stdio the vault is a folder on your machine: copy the files into it.
 
 ## Remote mode (Claude mobile and web)
 
